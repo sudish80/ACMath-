@@ -106,6 +106,7 @@ async function solveQuestion(enhanced, raw, operation, useFallback) {
             totalSteps: valid.length,
             raw: data.steps,
             method: data.method || null,
+            graph: data.graph === true,
         };
     } catch (err) {
         clearTimeout(timeoutId);

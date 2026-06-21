@@ -105,7 +105,7 @@
             setMethod(result.method || null);
             initCinema();
             initZoomPan();
-            renderGraphOnce(enhanced, raw);
+            if (result.graph) renderGraphOnce(enhanced, raw);
         } catch (err) {
             phaseTimers.forEach(clearTimeout);
             loadingOverlay.classList.remove('visible');
@@ -123,7 +123,7 @@
                     setMethod(result.method || null);
                     initCinema();
                     initZoomPan();
-                    renderGraphOnce(enhanced, raw);
+                    if (result.graph) renderGraphOnce(enhanced, raw);
                     return;
                 } catch (fallbackErr) {
                     loadingOverlay.classList.remove('visible');
@@ -241,7 +241,7 @@
                 setMethod(result.method || null);
                 initCinema();
                 initZoomPan();
-                renderGraphOnce(context, text);
+                if (result.graph) renderGraphOnce(context, text);
                 hideChatThinking();
                 addChatMessage('assistant', (result.method || 'Auto') + ' · ' + result.totalSteps + ' steps');
             } catch (err) {
@@ -256,7 +256,7 @@
                         setMethod(result.method || null);
                         initCinema();
                         initZoomPan();
-                        renderGraphOnce(context, text);
+                        if (result.graph) renderGraphOnce(context, text);
                         hideChatThinking();
                         addChatMessage('assistant', '8b fallback · ' + (result.method || 'Auto') + ' — ' + result.totalSteps + ' steps');
                     } catch (fe) {

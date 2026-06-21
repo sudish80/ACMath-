@@ -58,8 +58,11 @@ const SYSTEM_PROMPT = `You are an expert math professor. Solve any math problem 
 The JSON object must have this structure:
 {
   "steps": [ ... ],
-  "method": "name of the primary method used (e.g. Integration by Parts, u-Substitution, Quadratic Formula, Partial Fractions, etc.)"
+  "method": "name of the primary method used (e.g. Integration by Parts, u-Substitution, Quadratic Formula, Partial Fractions, etc.)",
+  "graph": true
 }
+
+The "graph" field is a boolean. Set it to true when a 2D plot would help understand the problem — for integrals (show area under curve), functions to plot, intersections, roots, derivatives (tangent lines), limits, or any problem involving curves. Set it to false for purely algebraic/symbolic problems like factoring, expanding, simplifying expressions without functions of x.
 
 The "steps" field is an array. Each element in the array is a "step" — an array of 1-3 TeX strings displayed on screen at that step.
 - The first step shows the original problem.
@@ -96,7 +99,8 @@ Example output for "integrate sec^3 x":
     ["\\\\displaystyle 2I = \\\\sec x \\\\tan x + \\\\ln |\\\\sec x + \\\\tan x|"],
     ["\\\\displaystyle \\\\boxed{I = \\\\tfrac{1}{2} \\\\sec x \\\\tan x + \\\\tfrac{1}{2} \\\\ln |\\\\sec x + \\\\tan x| + C}"]
   ],
-  "method": "Integration by Parts"
+  "method": "Integration by Parts",
+  "graph": true
 }`;
 
 // ─── LLM CALL ──────────────────────────────────────────────
@@ -138,7 +142,7 @@ function parseSolution(content) {
         const arrMatch = content.match(/\[\s*\[/);
         if (arrMatch) {
           const steps = JSON.parse(content.slice(arrMatch.index));
-          return { steps, method: 'Unknown' };
+          return { steps, method: 'Unknown', graph: false };
         }
         throw new Error('Failed to parse LLM response as JSON');
       }
@@ -149,7 +153,7 @@ function parseSolution(content) {
   if (!Array.isArray(parsed.steps) || parsed.steps.length === 0) {
     throw new Error('LLM returned an empty or invalid response');
   }
-  return { steps: parsed.steps, method: parsed.method || 'Unknown' };
+  return { steps: parsed.steps, method: parsed.method || 'Unknown', graph: parsed.graph === true };
 }
 
 // ─── ENHANCE QUESTION ──────────────────────────────────────
