@@ -26,11 +26,12 @@ function extractPlotExpr(qText, rawText) {
         .replace(/\\int.*$/, '').replace(/\\sum.*$/, '')
         .replace(/x\^(\d+)/g, 'x^$1').replace(/\^2/g, '^2').replace(/\^3/g, '^3');
     if (/integrate|∫/.test(text)) {
-        const m = clean.match(/(?:int\s+)?(.+?)\s*d[a-z]/i);
-        fn = m ? m[1].trim() : 'sin(x)'; fn = fn.replace(/^\\?int\s*/, '');
+        const m = clean.match(/(?:int\s+)?(.+?)\s*d\s*[a-z]/i) || clean.match(/(.+?)\s+from\s+/i);
+        fn = m ? m[1].trim() : clean; fn = fn.replace(/^\\?int\s*/, '');
+        fn = fn.replace(/\s+from\s+.*$/, '').replace(/\s+d\s*[a-z].*$/, '').trim();
     } else if (/differentiate|derivative/.test(text)) {
         const m = clean.match(/d[\/\\]d[a-z]\s*(.+)/i) || clean.match(/d\/dx\s*(.+)/i);
-        fn = m ? m[1].trim() : clean || 'sin(x)';
+        fn = m ? m[1].trim() : clean || 'x^2';
     } else if (/surface|3[dD]/.test(text) && /z\s*=/.test(clean)) {
         fn = clean.replace(/z\s*=\s*/i, '').trim() || 'sin(x)*cos(y)';
     } else if (/=/.test(clean) && !/z\s*=/.test(clean)) {
@@ -46,11 +47,13 @@ function extractPlotExpr(qText, rawText) {
 
 // ─── COMPILE MATH EXPRESSION ──────────────────────────
 function compileExpr(fnText) {
-    try { return new Function('x', 'with (Math) { try { return (' + fnText + '); } catch(e) { return NaN; } }'); }
+    const js = fnText.replace(/\^/g, '**');
+    try { return new Function('x', 'with (Math) { try { return (' + js + '); } catch(e) { return NaN; } }'); }
     catch (e) { return function() { return NaN; }; }
 }
 function compileExpr2(fnText) {
-    try { return new Function('x', 'y', 'with (Math) { try { return (' + fnText + '); } catch(e) { return NaN; } }'); }
+    const js = fnText.replace(/\^/g, '**');
+    try { return new Function('x', 'y', 'with (Math) { try { return (' + js + '); } catch(e) { return NaN; } }'); }
     catch (e) { return function() { return NaN; }; }
 }
 
