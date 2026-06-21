@@ -102,14 +102,21 @@ async function exportPDF() {
             doc.appendChild(p);
         }
 
-        // Graph (clone the rendered SVG)
-        const graphSvg = document.getElementById('desmosContainer')?.querySelector('svg');
-        if (graphSvg) {
+        // Graph (clone canvas as image)
+        const graphEl = document.getElementById('desmosContainer')?.querySelector('canvas') || document.getElementById('desmosContainer')?.querySelector('svg');
+        if (graphEl) {
             const g = document.createElement('div');
             g.style.cssText = 'width:100%;max-width:720px;margin:0 auto 28px;';
-            const svgCopy = graphSvg.cloneNode(true);
-            svgCopy.setAttribute('style', 'width:100%;height:auto;display:block;');
-            g.appendChild(svgCopy);
+            if (graphEl.tagName === 'CANVAS') {
+                const img = document.createElement('img');
+                img.src = graphEl.toDataURL('image/png');
+                img.style.cssText = 'width:100%;height:auto;display:block;border-radius:8px;';
+                g.appendChild(img);
+            } else {
+                const svgCopy = graphEl.cloneNode(true);
+                svgCopy.setAttribute('style', 'width:100%;height:auto;display:block;');
+                g.appendChild(svgCopy);
+            }
             doc.appendChild(g);
         }
 

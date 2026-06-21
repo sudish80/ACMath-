@@ -570,17 +570,17 @@ body {
 .graph-trace-btn:hover { color: white; border-color: rgba(59,110,255,0.3); background: rgba(59,110,255,0.1); }
 .graph-trace-btn.active { color: #59ff6b; border-color: rgba(89,255,107,0.3); background: rgba(89,255,107,0.08); }
 .desmos-container {
-    flex: 1; width: 100%; height: 100%;
+    flex: 1; width: 100%;
     position: relative; overflow: hidden;
 }
-.desmos-container svg {
-    width: 100%; height: 100%; position: absolute;
+.desmos-container canvas {
+    width: 100%; height: 100%; display: block;
 }
-.dcg-basic-expression { display: none !important; }
-
-/* Overrides for Desmos dark theme */
-.dcg-graphing-calculator { background: transparent !important; }
-.dcg-graphing-calculator .dcg-tooltip-container { display: none; }
+.desmos-container .graph-empty-msg {
+    position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%);
+    color: rgba(255,255,255,0.12); font-size: 0.85rem; text-align: center;
+    letter-spacing: 1px; pointer-events: none;
+}
 
 @media (max-width: 700px) {
     #inputOverlay h1 { font-size: 2rem; }

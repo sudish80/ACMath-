@@ -1,7 +1,7 @@
-// ─── GRAPH RENDERER ──────────────────────────────────────
-// SVG math graph engine with multi-trace, 3D surfaces,
-// vector fields, phase planes, Riemann sums, Taylor series,
-// curve tracing, parameter sliders, and per-step morphing.
+// ─── GRAPH RENDERER (Canvas 2D) ─────────────────────────
+// Animated Canvas-based graph engine with dark/light theme,
+// Riemann strips, multi-trace, 3D surfaces, vector fields,
+// phase planes, Taylor series, curve tracing, param sliders.
 
 let graphRendered = false;
 
@@ -49,409 +49,450 @@ function compileExpr(fnText) {
     try { return new Function('x', 'with (Math) { try { return (' + fnText + '); } catch(e) { return NaN; } }'); }
     catch (e) { return function() { return NaN; }; }
 }
-
 function compileExpr2(fnText) {
-    // For multi-variable (x,y) expressions
     try { return new Function('x', 'y', 'with (Math) { try { return (' + fnText + '); } catch(e) { return NaN; } }'); }
     catch (e) { return function() { return NaN; }; }
 }
 
-// ─── SVG MATH GRAPH ENGINE ────────────────────────────
-// traces: string or array of {fn, color, label, width, dash, derivative, integral, riemann}
-// opts: {bounds, qText, params, showLegend}
+// ─── THEME COLORS ─────────────────────────────────────
+let _dk = null;
+function isDark() { if (_dk === null) _dk = matchMedia('(prefers-color-scheme: dark)').matches; return _dk; }
+const TH = {
+    get bg() { return isDark() ? '#0d1425' : '#f2f6fe'; },
+    get grid() { return isDark() ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.05)'; },
+    get axis() { return isDark() ? 'rgba(200,220,250,0.2)' : 'rgba(40,60,100,0.2)'; },
+    get txt() { return isDark() ? 'rgba(160,190,230,0.55)' : 'rgba(60,80,120,0.6)'; },
+    get lbl() { return isDark() ? 'rgba(160,210,200,0.3)' : 'rgba(20,90,70,0.4)'; },
+    get pos() { return isDark() ? 'rgba(80,180,190,0.7)' : 'rgba(40,140,150,0.65)'; },
+    get neg() { return isDark() ? 'rgba(220,100,100,0.65)' : 'rgba(180,60,60,0.6)'; },
+    get curve() { return isDark() ? '#f0b37a' : '#b85c10'; },
+    get dot() { return isDark() ? '#fff5e6' : '#b85c10'; },
+};
 
-function hexToRgba(hex, alpha) {
-    if (/^rgba?\(/.test(hex)) return hex.replace(/[\d.]+\)$/, alpha + ')').replace(/rgb\(/, 'rgba(');
-    const m = hex.match(/^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i);
-    return m ? 'rgba(' + parseInt(m[1],16) + ',' + parseInt(m[2],16) + ',' + parseInt(m[3],16) + ',' + alpha + ')' : hex;
-}
-
+// ─── CANVAS MATH GRAPH ENGINE ─────────────────────────
 function plotFunction(traces, bounds, opts) {
     bounds = bounds || { xMin: -6, xMax: 6, yMin: -4, yMax: 4 };
     opts = opts || {};
     if (typeof traces === 'string') traces = [{ fn: traces, color: '#3b6eff', label: 'y = ' + traces }];
     if (!Array.isArray(traces)) traces = [{ fn: 'x^2', color: '#3b6eff', label: 'y = x^2' }];
 
-    const w = 900, h = 500, pad = 50;
-    const pw = w - 2 * pad, ph = h - 2 * pad;
-    const x0 = pad + (bounds.xMin < 0 && bounds.xMax > 0 ? (0 - bounds.xMin) / (bounds.xMax - bounds.xMin) * pw : 0);
-    const y0 = pad + ph - (bounds.yMin < 0 && bounds.yMax > 0 ? (0 - bounds.yMin) / (bounds.yMax - bounds.yMin) * ph : 0);
+    const W = 800, H = 420, P = { t: 32, b: 38, l: 52, r: 24 };
+    const GW = W - P.l - P.r, GH = H - P.t - P.b;
+    function mx(x) { return P.l + ((x - bounds.xMin) / (bounds.xMax - bounds.xMin)) * GW; }
+    function my(y) { return P.t + GH - ((y - bounds.yMin) / (bounds.yMax - bounds.yMin)) * GH; }
 
-    function toSX(x) { return pad + ((x - bounds.xMin) / (bounds.xMax - bounds.xMin)) * pw; }
-    function toSY(y) { return pad + ph - ((y - bounds.yMin) / (bounds.yMax - bounds.yMin)) * ph; }
-    function l(x1, y1, x2, y2, s, w, d) { return `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${s}" stroke-width="${w||1}"${d?' stroke-dasharray="'+d+'"':''}/>`; }
-    function tx(x, y, t, f, sz) { return `<text x="${x}" y="${y}" fill="${f||'rgba(255,255,255,0.15)'}" font-size="${sz||10}" text-anchor="${x<w/2?'start':x>w/2?'end':'middle'}" dominant-baseline="middle" font-family="inherit">${t}</text>`; }
-    function samplePoints(fn, xMin, xMax, yMin, yMax, steps) {
-        const compiled = typeof fn === 'function' ? fn : compileExpr(fn);
-        const pts = [];
-        for (let xv = xMin; xv <= xMax; xv += (xMax - xMin) / (steps || 400)) {
-            const yv = compiled(xv); const sx = toSX(xv), sy = toSY(yv);
-            if (yv !== undefined && yv !== null && isFinite(yv) && yv > yMin - 2 && yv < yMax + 2) pts.push({ x: sx, y: sy });
-            else if (pts.length > 1) pts.push({ break: true });
-        }
-        return pts;
-    }
-    function polyline(pts, s, w) {
-        if (pts.length < 2) return '';
-        const segs = []; let seg = [];
-        for (const p of pts) {
-            if (p.break) { if (seg.length > 1) segs.push(seg.map(pt => pt.x+','+pt.y).join(' ')); seg = []; }
-            else seg.push(p);
-        }
-        if (seg.length > 1) segs.push(seg.map(pt => pt.x+','+pt.y).join(' '));
-        return segs.map(sg => `<polyline points="${sg}" fill="none" stroke="${s||'#3b6eff'}" stroke-width="${w||2.5}" stroke-linecap="round" stroke-linejoin="round"/>`).join('');
-    }
+    const canvas = document.createElement('canvas');
+    canvas.width = W; canvas.height = H;
+    canvas.style.cssText = 'width:100%;height:100%;display:block';
+    const ctx = canvas.getContext('2d');
 
-    let svg = `<svg viewBox="0 0 ${w} ${h}" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:100%;display:block">`;
-    // Axes
-    const x0a = toSX(0), y0a = toSY(0);
-    if (bounds.xMin < 0 && bounds.xMax > 0) svg += l(x0a, pad, x0a, h-pad, 'rgba(255,255,255,0.12)', 1.2);
-    if (bounds.yMin < 0 && bounds.yMax > 0) svg += l(pad, y0a, w-pad, y0a, 'rgba(255,255,255,0.12)', 1.2);
-    svg += l(pad, pad, pad, h-pad, 'rgba(255,255,255,0.06)', 0.5);
-    svg += l(pad, h-pad, w-pad, h-pad, 'rgba(255,255,255,0.06)', 0.5);
+    // Background
+    ctx.fillStyle = TH.bg; ctx.fillRect(0, 0, W, H);
+
     // Grid
-    for (let gx = Math.ceil(bounds.xMin); gx <= bounds.xMax; gx++) { if (gx === 0) continue; const sx = toSX(gx); svg += l(sx, pad, sx, h-pad, 'rgba(255,255,255,0.03)', 0.5); svg += tx(sx, y0a+16, String(gx), 'rgba(255,255,255,0.12)', 9); }
-    for (let gy = Math.ceil(bounds.yMin); gy <= bounds.yMax; gy++) { if (gy === 0) continue; const sy = toSY(gy); svg += l(pad, sy, w-pad, sy, 'rgba(255,255,255,0.03)', 0.5); svg += tx(x0a-14, sy, String(gy), 'rgba(255,255,255,0.12)', 9); }
-    svg += tx(w-pad-2, y0a-10, 'x', 'rgba(255,255,255,0.2)', 12);
-    svg += tx(x0a+10, pad+8, 'y', 'rgba(255,255,255,0.2)', 12);
-    if (bounds.xMin < 0 && bounds.xMax > 0 && bounds.yMin < 0 && bounds.yMax > 0) svg += tx(x0a-8, y0a+14, '0', 'rgba(255,255,255,0.1)', 8);
+    ctx.lineWidth = 0.6; ctx.strokeStyle = TH.grid;
+    for (let xg = Math.ceil(bounds.xMin); xg <= bounds.xMax; xg++) {
+        if (xg === 0) continue;
+        ctx.beginPath(); ctx.moveTo(mx(xg), P.t); ctx.lineTo(mx(xg), H - P.b); ctx.stroke();
+    }
+    for (let yg = Math.ceil(bounds.yMin); yg <= bounds.yMax; yg++) {
+        if (yg === 0) continue;
+        ctx.beginPath(); ctx.moveTo(P.l, my(yg)); ctx.lineTo(W - P.r, my(yg)); ctx.stroke();
+    }
+
+    // Axes
+    ctx.strokeStyle = TH.axis; ctx.lineWidth = 1.0;
+    if (bounds.xMin < 0 && bounds.xMax > 0) { ctx.beginPath(); ctx.moveTo(mx(0), P.t); ctx.lineTo(mx(0), H - P.b); ctx.stroke(); }
+    if (bounds.yMin < 0 && bounds.yMax > 0) { ctx.beginPath(); ctx.moveTo(P.l, my(0)); ctx.lineTo(W - P.r, my(0)); ctx.stroke(); }
+
+    // Labels
+    ctx.fillStyle = TH.txt; ctx.font = '10px monospace';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+    for (let xg = Math.ceil(bounds.xMin); xg <= bounds.xMax; xg++) {
+        if (xg === 0) continue;
+        ctx.fillText(String(xg), mx(xg), H - P.b + 4);
+    }
+    ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+    for (let yg = Math.ceil(bounds.yMin); yg <= bounds.yMax; yg++) {
+        if (yg === 0) continue;
+        ctx.fillText(String(yg), P.l - 6, my(yg));
+    }
+    if (bounds.xMin < 0 && bounds.xMax > 0 && bounds.yMin < 0 && bounds.yMax > 0) {
+        ctx.textAlign = 'right'; ctx.textBaseline = 'top';
+        ctx.fillText('0', mx(0) - 4, my(0) + 3);
+    }
+    // Axis labels
+    ctx.fillStyle = TH.txt; ctx.font = '11px monospace';
+    ctx.textAlign = 'left'; ctx.textBaseline = 'bottom';
+    ctx.fillText('x', W - P.r - 2, my(0) - 4);
+    ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+    ctx.fillText('y', mx(0) + 4, P.t + 4);
 
     // Render each trace
-    let legendItems = [];
+    const compiledTraces = [];
+    const legendItems = [];
     traces.forEach((tr, idx) => {
-        const color = tr.color || ['#3b6eff','#59ff6b','#ff6b6b','#ffbd3b','#bd6bff','#6bffbd','#ff6bbd','#6bbdff'][idx % 8];
-        const fn = tr.fn; const label = tr.label || '';
-        const pts = samplePoints(fn, bounds.xMin, bounds.xMax, bounds.yMin, bounds.yMax, 400);
+        const color = tr.color || ['#3b6eff', '#59ff6b', '#ff6b6b', '#ffbd3b', '#bd6bff', '#6bffbd', '#ff6bbd', '#6bbdff'][idx % 8];
+        const fn = tr.fn;
+        const label = tr.label || '';
         const compiled = typeof fn === 'function' ? fn : compileExpr(fn);
+        compiledTraces.push({ compiled, tr, color, label });
 
-        // Curve
-        svg += polyline(pts, color, tr.width || 3);
-        if (pts.length > 2) svg += polyline(pts, hexToRgba(color, 0.06), (tr.width||3)+6);
-
-        // Derivative tangent (if flagged)
-        if (tr.derivative) {
-            try { const hh = 0.001; const txv = 0.5; const tf = compiled(txv); const tfd = (compiled(txv+hh)-compiled(txv-hh))/(2*hh);
-                if (isFinite(tf) && isFinite(tfd)) { const tlx=bounds.xMin,trx=bounds.xMax; const tly=tf+tfd*(tlx-txv),trY=tf+tfd*(trx-txv);
-                    if (isFinite(tly)&&isFinite(trY)) { svg+=l(toSX(tlx),toSY(tly),toSX(trx),toSY(trY),hexToRgba(color,0.35),1.5,'4,3'); svg+=`<circle cx="${toSX(txv)}" cy="${toSY(tf)}" r="4" fill="${hexToRgba(color,0.4)}"/>`; } }
-            } catch(e) {}
-        }
-
-        // Integral shading
-        if (tr.integral) {
-            try { const a=tr.integral[0]||0, b=tr.integral[1]||3; const shade=[]; const x0s=toSX(a),x0e=toSX(b);
-                for (let xv=a;xv<=b;xv+=(b-a)/100) { const yv=compiled(xv); if (isFinite(yv)) { if (!shade.length) shade.push({x:toSX(xv),y:toSY(0)}); shade.push({x:toSX(xv),y:toSY(yv)}); } }
-                if (shade.length>1) { shade.push({x:toSX(b),y:toSY(0)}); const poly=shade.map(p=>p.x+','+p.y).join(' '); svg+=`<polygon points="${poly}" fill="${hexToRgba(color,0.08)}" stroke="none"/>`; svg+=l(x0s,toSY(0),x0s,toSY(0)-20,hexToRgba(color,0.15),1); svg+=l(x0e,toSY(0),x0e,toSY(0)-20,hexToRgba(color,0.15),1); svg+=tx(x0s,toSY(0)+14,'a','rgba(255,255,255,0.2)',9); svg+=tx(x0e,toSY(0)+14,'b','rgba(255,255,255,0.2)',9); } }
-            catch(e) {}
-        }
-
-        // Riemann sums
-        if (tr.riemann) {
-            const n = tr.riemann.n || 6; const a = tr.riemann.a !== undefined ? tr.riemann.a : 0; const b = tr.riemann.b !== undefined ? tr.riemann.b : 3;
-            const riemannColor = hexToRgba(color, 0.12);
-            const riemannStroke = hexToRgba(color, 0.25);
-            for (let i = 0; i < n; i++) {
-                const xl = a + (b-a)*i/n; const xr = a + (b-a)*(i+1)/n; const xm = (xl+xr)/2;
-                const ym = compiled(xm); if (!isFinite(ym)) continue;
-                const rxl = toSX(xl), rxr = toSX(xr), rym = toSY(ym), ryo = toSY(0);
-                svg += `<rect x="${rxl}" y="${Math.min(rym,ryo)}" width="${rxr-rxl}" height="${Math.abs(rym-ryo)}" fill="${riemannColor}" stroke="${riemannStroke}" stroke-width="0.5"/>`;
+        // Build sample points for curve
+        const pts = [];
+        for (let xv = bounds.xMin; xv <= bounds.xMax; xv += (bounds.xMax - bounds.xMin) / 400) {
+            const yv = compiled(xv);
+            if (yv !== undefined && yv !== null && isFinite(yv) && yv > bounds.yMin - 2 && yv < bounds.yMax + 2) {
+                pts.push({ x: mx(xv), y: my(yv) });
+            } else if (pts.length > 1) {
+                pts.push({ break: true });
             }
         }
 
-        if (label) legendItems.push({ color, label, idx });
+        // Integral shading (thin strips)
+        if (tr.integral) {
+            try {
+                const a = tr.integral[0] || 0, b = tr.integral[1] || 3;
+                const dx = (b - a) / 120;
+                for (let xv = a; xv <= b; xv += dx) {
+                    const yv = compiled(xv);
+                    if (!isFinite(yv)) continue;
+                    const px = mx(xv), pw2 = Math.max(0.5, mx(xv + dx) - mx(xv));
+                    const pyT = my(yv), pyB = my(0);
+                    const rTop = Math.min(pyT, pyB), rH = Math.abs(pyT - pyB);
+                    ctx.fillStyle = yv >= 0 ? TH.pos : TH.neg;
+                    ctx.fillRect(px, rTop, pw2, rH);
+                }
+            } catch (e) {}
+        }
+
+        // Riemann sums (thin strips)
+        if (tr.riemann) {
+            const n = tr.riemann.n || 20;
+            const a = tr.riemann.a !== undefined ? tr.riemann.a : 0;
+            const b = tr.riemann.b !== undefined ? tr.riemann.b : 3;
+            const dx = (b - a) / n;
+            for (let i = 0; i < n; i++) {
+                const xm = a + (i + 0.5) * dx;
+                const yv = compiled(xm);
+                if (!isFinite(yv)) continue;
+                const px = mx(a + i * dx), pw2 = Math.max(0.5, mx(a + (i + 1) * dx) - mx(a + i * dx));
+                const pyT = my(yv), pyB = my(0);
+                const rTop = Math.min(pyT, pyB), rH = Math.abs(pyT - pyB);
+                ctx.fillStyle = yv >= 0 ? TH.pos : TH.neg;
+                ctx.fillRect(px, rTop, pw2, rH);
+            }
+        }
+
+        // Faded full curve behind
+        ctx.beginPath(); ctx.strokeStyle = isDark() ? 'rgba(100,130,190,0.15)' : 'rgba(80,110,160,0.12)'; ctx.lineWidth = 1;
+        let started = false;
+        for (let i = 0; i <= 500; i++) {
+            const x = bounds.xMin + i / 500 * (bounds.xMax - bounds.xMin);
+            const yv = compiled(x);
+            if (isFinite(yv) && yv > bounds.yMin - 2 && yv < bounds.yMax + 2) {
+                if (!started) { ctx.moveTo(mx(x), my(yv)); started = true; }
+                else ctx.lineTo(mx(x), my(yv));
+            } else { started = false; }
+        }
+        ctx.stroke();
+
+        // Bright curve
+        ctx.beginPath(); ctx.strokeStyle = color; ctx.lineWidth = 2.5;
+        ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+        started = false;
+        for (let i = 0; i <= 500; i++) {
+            const x = bounds.xMin + i / 500 * (bounds.xMax - bounds.xMin);
+            const yv = compiled(x);
+            if (isFinite(yv) && yv > bounds.yMin - 2 && yv < bounds.yMax + 2) {
+                if (!started) { ctx.moveTo(mx(x), my(yv)); started = true; }
+                else ctx.lineTo(mx(x), my(yv));
+            } else { started = false; }
+        }
+        ctx.stroke();
+
+        // Derivative tangent
+        if (tr.derivative) {
+            try {
+                const hh = 0.001, txv = 0.5;
+                const tf = compiled(txv), tfd = (compiled(txv + hh) - compiled(txv - hh)) / (2 * hh);
+                if (isFinite(tf) && isFinite(tfd)) {
+                    const tlx = bounds.xMin, trx = bounds.xMax;
+                    const tly = tf + tfd * (tlx - txv), trY = tf + tfd * (trx - txv);
+                    if (isFinite(tly) && isFinite(trY)) {
+                        ctx.strokeStyle = 'rgba(240,179,122,0.4)'; ctx.lineWidth = 1.5;
+                        ctx.setLineDash([4, 3]);
+                        ctx.beginPath(); ctx.moveTo(mx(tlx), my(tly)); ctx.lineTo(mx(trx), my(trY)); ctx.stroke();
+                        ctx.setLineDash([]);
+                        ctx.fillStyle = 'rgba(240,179,122,0.5)'; ctx.beginPath();
+                        ctx.arc(mx(txv), my(tf), 4, 0, 2 * Math.PI); ctx.fill();
+                    }
+                }
+            } catch (e) {}
+        }
+
+        if (label) legendItems.push({ color, label });
     });
 
     // Legend
     if (opts.showLegend !== false && legendItems.length > 1) {
-        let ly = pad + 6;
+        ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+        let ly = P.t + 10;
         legendItems.forEach(li => {
-            svg += `<rect x="${pad+4}" y="${ly-4}" width="14" height="3" rx="1.5" fill="${li.color}"/>`;
-            svg += tx(pad+22, ly, li.label, 'rgba(255,255,255,0.25)', 9);
+            ctx.fillStyle = li.color; ctx.fillRect(P.l + 4, ly - 2, 14, 2.5);
+            ctx.fillStyle = TH.txt; ctx.font = '9px monospace';
+            ctx.fillText(li.label, P.l + 22, ly);
             ly += 16;
         });
     }
 
     // Function label (first trace)
     if (traces[0] && traces[0].label && legendItems.length <= 1) {
-        svg += tx(pad+12, pad+18, traces[0].label, 'rgba(59,110,255,0.4)', 10);
+        ctx.fillStyle = TH.txt; ctx.font = '10px monospace';
+        ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+        ctx.fillText(traces[0].label, P.l + 8, P.t + 6);
     }
 
-    // Parameter sliders indicator
-    if (opts.params) {
-        svg += tx(w-pad-8, h-pad-4, '⚙ sliders active', 'rgba(255,255,255,0.1)', 8);
-    }
-
-    svg += '</svg>';
-    return svg;
+    return canvas;
 }
 
-// ─── 3D SURFACE PLOT (isometric projection) ──────────
+// ─── 3D SURFACE (Canvas) ──────────────────────────────
 function plotSurface3D(fnText, bounds) {
     bounds = bounds || { xMin: -3, xMax: 3, yMin: -3, yMax: 3 };
-    const w = 900, h = 500;
+    const W = 800, H = 420;
+    const canvas = document.createElement('canvas');
+    canvas.width = W; canvas.height = H;
+    canvas.style.cssText = 'width:100%;height:100%;display:block';
+    const ctx = canvas.getContext('2d');
     const compiled = compileExpr2(fnText);
+    const gridRes = 20;
     const zScale = 1.2;
 
-    // Isometric projection
     function project(x, y, z) {
         const sx = (x - bounds.xMin) / (bounds.xMax - bounds.xMin) - 0.5;
         const sy = (y - bounds.yMin) / (bounds.yMax - bounds.yMin) - 0.5;
         const sz = z * zScale;
-        const px = 450 + (sx - sy) * 260;
-        const py = 260 + (sx + sy) * 140 - sz * 50;
-        return { x: px, y: py };
+        return { x: 400 + (sx - sy) * 220, y: 220 + (sx + sy) * 120 - sz * 40 };
     }
 
-    const gridRes = 20;
     const grid = [];
     for (let i = 0; i <= gridRes; i++) {
         const row = [];
         for (let j = 0; j <= gridRes; j++) {
             const x = bounds.xMin + (bounds.xMax - bounds.xMin) * i / gridRes;
             const y = bounds.yMin + (bounds.yMax - bounds.yMin) * j / gridRes;
-            let z = 0;
-            try { z = compiled(x, y); if (!isFinite(z)) z = 0; } catch(e) { z = 0; }
+            let z = 0; try { z = compiled(x, y); if (!isFinite(z)) z = 0; } catch (e) { z = 0; }
             row.push(project(x, y, z));
         }
         grid.push(row);
     }
 
-    let svg = `<svg viewBox="0 0 ${w} ${h}" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:100%;display:block">`;
+    ctx.fillStyle = TH.bg; ctx.fillRect(0, 0, W, H);
 
     // Floor grid
+    ctx.strokeStyle = isDark() ? 'rgba(255,255,255,0.03)' : 'rgba(0,0,0,0.03)'; ctx.lineWidth = 0.5;
     for (let i = 0; i <= gridRes; i++) {
-        let pts = '';
+        ctx.beginPath();
         for (let j = 0; j <= gridRes; j++) {
-            const p = project(
-                bounds.xMin + (bounds.xMax - bounds.xMin) * i / gridRes,
+            const p = project(bounds.xMin + (bounds.xMax - bounds.xMin) * i / gridRes,
                 bounds.yMin + (bounds.yMax - bounds.yMin) * j / gridRes, 0);
-            pts += (j === 0 ? '' : ' ') + p.x + ',' + p.y;
+            j === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y);
         }
-        svg += `<polyline points="${pts}" fill="none" stroke="rgba(255,255,255,0.04)" stroke-width="0.5"/>`;
-        pts = '';
+        ctx.stroke();
+        ctx.beginPath();
         for (let j = 0; j <= gridRes; j++) {
-            const p = project(
-                bounds.xMin + (bounds.xMax - bounds.xMin) * j / gridRes,
+            const p = project(bounds.xMin + (bounds.xMax - bounds.xMin) * j / gridRes,
                 bounds.yMin + (bounds.yMax - bounds.yMin) * i / gridRes, 0);
-            pts += (j === 0 ? '' : ' ') + p.x + ',' + p.y;
+            j === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y);
         }
-        svg += `<polyline points="${pts}" fill="none" stroke="rgba(255,255,255,0.04)" stroke-width="0.5"/>`;
+        ctx.stroke();
     }
 
-    // Surface mesh (back to front)
+    // Surface mesh
     for (let i = 0; i < gridRes; i++) {
         for (let j = 0; j < gridRes; j++) {
-            const p00 = grid[i][j], p10 = grid[i+1][j], p01 = grid[i][j+1], p11 = grid[i+1][j+1];
-            const avgZ = (() => {
-                let s = 0, c = 0;
-                try { s += compileExpr2(fnText)(bounds.xMin+(bounds.xMax-bounds.xMin)*i/gridRes, bounds.yMin+(bounds.yMax-bounds.yMin)*j/gridRes); c++; } catch(e) {}
-                try { s += compileExpr2(fnText)(bounds.xMin+(bounds.xMax-bounds.xMin)*(i+1)/gridRes, bounds.yMin+(bounds.yMax-bounds.yMin)*(j+1)/gridRes); c++; } catch(e) {}
-                return c ? s/c : 0;
-            })();
+            const p00 = grid[i][j], p10 = grid[i + 1][j], p01 = grid[i][j + 1], p11 = grid[i + 1][j + 1];
+            let s = 0, c = 0;
+            try { s += compiled(bounds.xMin + (bounds.xMax - bounds.xMin) * i / gridRes, bounds.yMin + (bounds.yMax - bounds.yMin) * j / gridRes); c++; } catch (e) { }
+            try { s += compiled(bounds.xMin + (bounds.xMax - bounds.xMin) * (i + 1) / gridRes, bounds.yMin + (bounds.yMax - bounds.yMin) * (j + 1) / gridRes); c++; } catch (e) { }
+            const avgZ = c ? s / c : 0;
             const z01 = Math.max(0, Math.min(1, (avgZ + 1) / 2));
-            const r = Math.round(20 + z01 * 40);
-            const g = Math.round(60 + z01 * 80);
-            const b = Math.round(200 - z01 * 100);
-            const fill = `rgba(${r},${g},${b},0.15)`;
-            const pts = `${p00.x},${p00.y} ${p10.x},${p10.y} ${p11.x},${p11.y} ${p01.x},${p01.y}`;
-            svg += `<polygon points="${pts}" fill="${fill}" stroke="rgba(59,110,255,0.08)" stroke-width="0.3"/>`;
+            const r = Math.round(20 + z01 * 40), g = Math.round(60 + z01 * 80), b = Math.round(200 - z01 * 100);
+            ctx.fillStyle = `rgba(${r},${g},${b},0.12)`;
+            ctx.strokeStyle = `rgba(59,110,255,0.06)`;
+            ctx.lineWidth = 0.3;
+            ctx.beginPath();
+            ctx.moveTo(p00.x, p00.y); ctx.lineTo(p10.x, p10.y);
+            ctx.lineTo(p11.x, p11.y); ctx.lineTo(p01.x, p01.y); ctx.closePath();
+            ctx.fill(); ctx.stroke();
         }
     }
 
-    // Axes labels
-    svg += tx(80, 260, 'x', 'rgba(255,255,255,0.15)', 10);
-    svg += tx(820, 260, 'y', 'rgba(255,255,255,0.15)', 10);
-    svg += tx(440, 30, 'z', 'rgba(255,255,255,0.15)', 10);
-
-    svg += `</svg>`;
-    return svg;
+    ctx.fillStyle = TH.txt; ctx.font = '10px monospace';
+    ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+    ctx.fillText('x', 60, 230);
+    ctx.textAlign = 'right'; ctx.fillText('y', 740, 230);
+    ctx.textAlign = 'center'; ctx.fillText('z', 400, 20);
+    return canvas;
 }
 
-// ─── VECTOR FIELD PLOT ───────────────────────────────
+// ─── VECTOR FIELD (Canvas) ────────────────────────────
 function plotVectorField(dxText, dyText, bounds) {
     bounds = bounds || { xMin: -5, xMax: 5, yMin: -4, yMax: 4 };
-    const w = 900, h = 500, pad = 50;
-    const pw = w - 2*pad, ph = h - 2*pad;
+    const W = 800, H = 420, P = { t: 32, b: 38, l: 52, r: 24 };
+    const GW = W - P.l - P.r, GH = H - P.t - P.b;
     const dxCompiled = compileExpr2(dxText);
     const dyCompiled = compileExpr2(dyText);
+    const canvas = document.createElement('canvas');
+    canvas.width = W; canvas.height = H;
+    canvas.style.cssText = 'width:100%;height:100%;display:block';
+    const ctx = canvas.getContext('2d');
 
-    function toSX(x) { return pad + ((x - bounds.xMin) / (bounds.xMax - bounds.xMin)) * pw; }
-    function toSY(y) { return pad + ph - ((y - bounds.yMin) / (bounds.yMax - bounds.yMin)) * ph; }
+    function mx(x) { return P.l + ((x - bounds.xMin) / (bounds.xMax - bounds.xMin)) * GW; }
+    function my(y) { return P.t + GH - ((y - bounds.yMin) / (bounds.yMax - bounds.yMin)) * GH; }
 
-    let svg = `<svg viewBox="0 0 ${w} ${h}" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:100%;display:block">`;
+    ctx.fillStyle = TH.bg; ctx.fillRect(0, 0, W, H);
 
-    // Background
-    for (let gx = Math.ceil(bounds.xMin); gx <= bounds.xMax; gx++) { if (gx===0) continue; const sx=toSX(gx); svg+=`<line x1="${sx}" y1="${pad}" x2="${sx}" y2="${h-pad}" stroke="rgba(255,255,255,0.03)" stroke-width="0.5"/>`; }
-    for (let gy = Math.ceil(bounds.yMin); gy <= bounds.yMax; gy++) { if (gy===0) continue; const sy=toSY(gy); svg+=`<line x1="${pad}" y1="${sy}" x2="${w-pad}" y2="${sy}" stroke="rgba(255,255,255,0.03)" stroke-width="0.5"/>`; }
-    const x0a=toSX(0),y0a=toSY(0);
-    if (bounds.xMin<0&&bounds.xMax>0) svg+=`<line x1="${x0a}" y1="${pad}" x2="${x0a}" y2="${h-pad}" stroke="rgba(255,255,255,0.1)" stroke-width="1"/>`;
-    if (bounds.yMin<0&&bounds.yMax>0) svg+=`<line x1="${pad}" y1="${y0a}" x2="${w-pad}" y2="${y0a}" stroke="rgba(255,255,255,0.1)" stroke-width="1"/>`;
+    ctx.strokeStyle = TH.grid; ctx.lineWidth = 0.5;
+    for (let gx = Math.ceil(bounds.xMin); gx <= bounds.xMax; gx++) { if (gx === 0) continue; ctx.beginPath(); ctx.moveTo(mx(gx), P.t); ctx.lineTo(mx(gx), H - P.b); ctx.stroke(); }
+    for (let gy = Math.ceil(bounds.yMin); gy <= bounds.yMax; gy++) { if (gy === 0) continue; ctx.beginPath(); ctx.moveTo(P.l, my(gy)); ctx.lineTo(W - P.r, my(gy)); ctx.stroke(); }
 
-    // Arrows
-    const spacing = 1.2;
-    const scale = 0.35;
-    for (let gx = Math.ceil(bounds.xMin/spacing)*spacing; gx <= bounds.xMax; gx += spacing) {
-        for (let gy = Math.ceil(bounds.yMin/spacing)*spacing; gy <= bounds.yMax; gy += spacing) {
+    ctx.strokeStyle = TH.axis; ctx.lineWidth = 0.8;
+    if (bounds.xMin < 0 && bounds.xMax > 0) { ctx.beginPath(); ctx.moveTo(mx(0), P.t); ctx.lineTo(mx(0), H - P.b); ctx.stroke(); }
+    if (bounds.yMin < 0 && bounds.yMax > 0) { ctx.beginPath(); ctx.moveTo(P.l, my(0)); ctx.lineTo(W - P.r, my(0)); ctx.stroke(); }
+
+    const spacing = 1.2, scale = 0.35;
+    for (let gx = Math.ceil(bounds.xMin / spacing) * spacing; gx <= bounds.xMax; gx += spacing) {
+        for (let gy = Math.ceil(bounds.yMin / spacing) * spacing; gy <= bounds.yMax; gy += spacing) {
             if (Math.abs(gx) < 0.3 && Math.abs(gy) < 0.3) continue;
             let dx, dy;
-            try { dx = dxCompiled(gx, gy); dy = dyCompiled(gx, gy); } catch(e) { continue; }
+            try { dx = dxCompiled(gx, gy); dy = dyCompiled(gx, gy); } catch (e) { continue; }
             if (!isFinite(dx) || !isFinite(dy) || (Math.abs(dx) < 0.001 && Math.abs(dy) < 0.001)) continue;
-            const len = Math.sqrt(dx*dx + dy*dy);
-            const nx = dx/len, ny = dy/len;
+            const len = Math.sqrt(dx * dx + dy * dy);
+            const nx = dx / len, ny = dy / len;
             const arrLen = Math.min(0.8, len * scale);
-            const sx = toSX(gx), sy = toSY(gy);
-            const ex = toSX(gx + nx * arrLen), ey = toSY(gy + ny * arrLen);
-            svg += `<line x1="${sx}" y1="${sy}" x2="${ex}" y2="${ey}" stroke="rgba(59,110,255,0.25)" stroke-width="1.5" stroke-linecap="round"/>`;
-            // Arrowhead
-            const angle = Math.atan2(ny, nx);
-            const ah = 5;
-            svg += `<polygon points="${ex},${ey} ${ex-ah*Math.cos(angle-0.4)},${ey-ah*Math.sin(angle-0.4)} ${ex-ah*Math.cos(angle+0.4)},${ey-ah*Math.sin(angle+0.4)}" fill="rgba(59,110,255,0.25)" stroke="none"/>`;
+            const sx = mx(gx), sy = my(gy), ex = mx(gx + nx * arrLen), ey = my(gy + ny * arrLen);
+            ctx.strokeStyle = isDark() ? 'rgba(59,110,255,0.2)' : 'rgba(59,110,255,0.15)'; ctx.lineWidth = 1.2;
+            ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(ex, ey); ctx.stroke();
+            const angle = Math.atan2(ny, nx), ah = 4;
+            ctx.fillStyle = isDark() ? 'rgba(59,110,255,0.2)' : 'rgba(59,110,255,0.15)';
+            ctx.beginPath();
+            ctx.moveTo(ex, ey);
+            ctx.lineTo(ex - ah * Math.cos(angle - 0.4), ey - ah * Math.sin(angle - 0.4));
+            ctx.lineTo(ex - ah * Math.cos(angle + 0.4), ey - ah * Math.sin(angle + 0.4));
+            ctx.closePath(); ctx.fill();
         }
     }
-
-    svg += tx(w-pad-8, pad+10, 'Vector Field', 'rgba(255,255,255,0.12)', 9);
-    svg += `</svg>`;
-    return svg;
+    return canvas;
 }
 
-// ─── PHASE PLANE PLOT ────────────────────────────────
+// ─── PHASE PLANE (Canvas) ─────────────────────────────
 function plotPhasePlane(dxText, dyText, bounds) {
     bounds = bounds || { xMin: -4, xMax: 4, yMin: -4, yMax: 4 };
-    const w = 900, h = 500, pad = 50;
-    const pw = w - 2*pad, ph = h - 2*pad;
+    const W = 800, H = 420, P = { t: 32, b: 38, l: 52, r: 24 };
+    const GW = W - P.l - P.r, GH = H - P.t - P.b;
     const dxCompiled = compileExpr2(dxText);
     const dyCompiled = compileExpr2(dyText);
+    const canvas = document.createElement('canvas');
+    canvas.width = W; canvas.height = H;
+    canvas.style.cssText = 'width:100%;height:100%;display:block';
+    const ctx = canvas.getContext('2d');
 
-    function toSX(x) { return pad + ((x - bounds.xMin) / (bounds.xMax - bounds.xMin)) * pw; }
-    function toSY(y) { return pad + ph - ((y - bounds.yMin) / (bounds.yMax - bounds.yMin)) * ph; }
+    function mx(x) { return P.l + ((x - bounds.xMin) / (bounds.xMax - bounds.xMin)) * GW; }
+    function my(y) { return P.t + GH - ((y - bounds.yMin) / (bounds.yMax - bounds.yMin)) * GH; }
 
-    let svg = `<svg viewBox="0 0 ${w} ${h}" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:100%;display:block">`;
+    ctx.fillStyle = TH.bg; ctx.fillRect(0, 0, W, H);
 
-    // Background
-    for (let gx = Math.ceil(bounds.xMin); gx <= bounds.xMax; gx++) { if (gx===0) continue; const sx=toSX(gx); svg+=`<line x1="${sx}" y1="${pad}" x2="${sx}" y2="${h-pad}" stroke="rgba(255,255,255,0.03)" stroke-width="0.5"/>`; }
-    for (let gy = Math.ceil(bounds.yMin); gy <= bounds.yMax; gy++) { if (gy===0) continue; const sy=toSY(gy); svg+=`<line x1="${pad}" y1="${sy}" x2="${w-pad}" y2="${sy}" stroke="rgba(255,255,255,0.03)" stroke-width="0.5"/>`; }
-    const x0a=toSX(0),y0a=toSY(0);
-    if (bounds.xMin<0&&bounds.xMax>0) svg+=`<line x1="${x0a}" y1="${pad}" x2="${x0a}" y2="${h-pad}" stroke="rgba(255,255,255,0.1)" stroke-width="1"/>`;
-    if (bounds.yMin<0&&bounds.yMax>0) svg+=`<line x1="${pad}" y1="${y0a}" x2="${w-pad}" y2="${y0a}" stroke="rgba(255,255,255,0.1)" stroke-width="1"/>`;
-    svg += tx(x0a-14, y0a+16, '0', 'rgba(255,255,255,0.08)', 8);
-    svg += tx(w-pad-4, y0a-6, 'x', 'rgba(255,255,255,0.15)', 11);
-    svg += tx(x0a+8, pad+6, 'y', 'rgba(255,255,255,0.15)', 11);
+    ctx.strokeStyle = TH.grid; ctx.lineWidth = 0.5;
+    for (let gx = Math.ceil(bounds.xMin); gx <= bounds.xMax; gx++) { if (gx === 0) continue; ctx.beginPath(); ctx.moveTo(mx(gx), P.t); ctx.lineTo(mx(gx), H - P.b); ctx.stroke(); }
+    for (let gy = Math.ceil(bounds.yMin); gy <= bounds.yMax; gy++) { if (gy === 0) continue; ctx.beginPath(); ctx.moveTo(P.l, my(gy)); ctx.lineTo(W - P.r, my(gy)); ctx.stroke(); }
+    ctx.strokeStyle = TH.axis; ctx.lineWidth = 0.8;
+    if (bounds.xMin < 0 && bounds.xMax > 0) { ctx.beginPath(); ctx.moveTo(mx(0), P.t); ctx.lineTo(mx(0), H - P.b); ctx.stroke(); }
+    if (bounds.yMin < 0 && bounds.yMax > 0) { ctx.beginPath(); ctx.moveTo(P.l, my(0)); ctx.lineTo(W - P.r, my(0)); ctx.stroke(); }
 
-    // Nullclines
-    function traceNullcline(expr, color) {
+    // Nullclines as scatter
+    function drawNullcline(expr, color) {
         const fn = compileExpr2(expr);
-        const pts = [];
-        for (let xv = bounds.xMin; xv <= bounds.xMax; xv += (bounds.xMax-bounds.xMin)/200) {
-            for (let yv = bounds.yMin; yv <= bounds.yMax; yv += (bounds.yMax-bounds.yMin)/200) {
-                try { const v = fn(xv, yv); if (isFinite(v) && Math.abs(v) < 0.15) pts.push({ x: toSX(xv), y: toSY(yv) }); } catch(e) {}
+        for (let xv = bounds.xMin; xv <= bounds.xMax; xv += (bounds.xMax - bounds.xMin) / 150) {
+            for (let yv = bounds.yMin; yv <= bounds.yMax; yv += (bounds.yMax - bounds.yMin) / 150) {
+                try { const v = fn(xv, yv); if (isFinite(v) && Math.abs(v) < 0.15) { ctx.fillStyle = color; ctx.fillRect(mx(xv) - 0.5, my(yv) - 0.5, 1, 1); } } catch (e) { }
             }
         }
-        if (pts.length > 2) {
-            svg += `<polyline points="${pts.map(p=>p.x+','+p.y).join(' ')}" fill="none" stroke="${color}" stroke-width="1" stroke-dasharray="3,3" opacity="0.4"/>`;
-        }
     }
-    traceNullcline(dxText, 'rgba(255,107,107,0.4)');   // x-nullcline (dx=0) in red
-    traceNullcline(dyText, 'rgba(107,255,107,0.4)');   // y-nullcline (dy=0) in green
+    drawNullcline(dxText, 'rgba(255,107,107,0.3)');
+    drawNullcline(dyText, 'rgba(107,255,107,0.3)');
 
     // Direction arrows
+    ctx.strokeStyle = isDark() ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.08)'; ctx.lineWidth = 0.8;
     const spacing = 1.5;
-    for (let gx = Math.ceil(bounds.xMin/spacing)*spacing; gx <= bounds.xMax; gx += spacing) {
-        for (let gy = Math.ceil(bounds.yMin/spacing)*spacing; gy <= bounds.yMax; gy += spacing) {
+    for (let gx = Math.ceil(bounds.xMin / spacing) * spacing; gx <= bounds.xMax; gx += spacing) {
+        for (let gy = Math.ceil(bounds.yMin / spacing) * spacing; gy <= bounds.yMax; gy += spacing) {
             if (Math.abs(gx) < 0.3 && Math.abs(gy) < 0.3) continue;
             let dx, dy;
-            try { dx = dxCompiled(gx, gy); dy = dyCompiled(gx, gy); } catch(e) { continue; }
-            if (!isFinite(dx) || !isFinite(dy)) continue;
-            const len = Math.sqrt(dx*dx + dy*dy);
-            if (len < 0.01) continue;
-            const nx = dx/len, ny = dy/len;
-            const arrLen = 0.5;
-            const sx = toSX(gx), sy = toSY(gy);
-            const ex = toSX(gx + nx * arrLen), ey = toSY(gy + ny * arrLen);
-            svg += `<line x1="${sx}" y1="${sy}" x2="${ex}" y2="${ey}" stroke="rgba(255,255,255,0.12)" stroke-width="1" stroke-linecap="round"/>`;
+            try { dx = dxCompiled(gx, gy); dy = dyCompiled(gx, gy); } catch (e) { continue; }
+            if (!isFinite(dx) || !isFinite(dy) || Math.sqrt(dx * dx + dy * dy) < 0.01) continue;
+            const len = Math.sqrt(dx * dx + dy * dy), nx = dx / len, ny = dy / len;
+            const sx = mx(gx), sy = my(gy), ex = mx(gx + nx * 0.5), ey = my(gy + ny * 0.5);
+            ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(ex, ey); ctx.stroke();
         }
     }
 
-    // Sample trajectory
-    function traceTrajectory(x0, y0, color, tSteps) {
-        tSteps = tSteps || 200; const dt = 0.05;
-        let pts = []; let cx = x0, cy = y0;
-        for (let i = 0; i < tSteps; i++) {
-            const sx = toSX(cx), sy = toSY(cy);
+    // Trajectories
+    function traceTrajectory(x0, y0, color) {
+        const dt = 0.05; let cx = x0, cy = y0;
+        ctx.strokeStyle = color; ctx.lineWidth = 1.8;
+        ctx.beginPath(); ctx.moveTo(mx(cx), my(cy));
+        for (let i = 0; i < 200; i++) {
             if (cx < bounds.xMin || cx > bounds.xMax || cy < bounds.yMin || cy > bounds.yMax) break;
-            pts.push({ x: sx, y: sy });
-            try { const dx = dxCompiled(cx, cy); const dy = dyCompiled(cx, cy); cx += dx * dt; cy += dy * dt; } catch(e) { break; }
+            ctx.lineTo(mx(cx), my(cy));
+            try { const dx = dxCompiled(cx, cy), dy = dyCompiled(cx, cy); cx += dx * dt; cy += dy * dt; } catch (e) { break; }
         }
-        if (pts.length > 2) {
-            svg += `<polyline points="${pts.map(p=>p.x+','+p.y).join(' ')}" fill="none" stroke="${color}" stroke-width="2" stroke-linecap="round" opacity="0.6"/>`;
-            svg += `<circle cx="${pts[0].x}" cy="${pts[0].y}" r="3" fill="${color}" opacity="0.6"/>`;
-        }
+        ctx.stroke();
     }
-    traceTrajectory(1, 1, '#3b6eff');
-    traceTrajectory(-1, -1, '#6bffbd');
-    traceTrajectory(1, -2, '#ff6bbd');
-    traceTrajectory(-2, 1.5, '#ffbd3b');
+    traceTrajectory(1, 1, 'rgba(59,110,255,0.5)');
+    traceTrajectory(-1, -1, 'rgba(107,255,189,0.5)');
+    traceTrajectory(1, -2, 'rgba(255,107,189,0.5)');
 
-    svg += tx(pad+8, pad+12, 'Phase Plane', 'rgba(255,255,255,0.12)', 9);
-    svg += tx(pad+8, pad+24, '— nullclines (dashed)', 'rgba(255,255,255,0.08)', 8);
-    svg += `</svg>`;
-    return svg;
+    ctx.fillStyle = TH.txt; ctx.font = '9px monospace';
+    ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+    ctx.fillText('Phase Plane', P.l + 6, P.t + 6);
+    return canvas;
 }
 
-// ─── TAYLOR SERIES ────────────────────────────────────
+// ─── TAYLOR SERIES (Canvas) ───────────────────────────
 function generateTaylorTerms(fnText, n) {
-    // Generate symbolic Taylor terms around x=0 using finite differences
     const compiled = compileExpr(fnText);
-    const terms = [];
-    const h = 0.001;
+    const terms = [], h = 0.001;
+    const coeffs = [[1], [-1, 1], [1, -2, 1], [-1, 3, -3, 1], [1, -4, 6, -4, 1], [-1, 5, -10, 10, -5, 1], [1, -6, 15, -20, 15, -6, 1]];
     for (let k = 0; k <= n; k++) {
-        // k-th derivative via finite difference
         let deriv = 0;
-        if (k === 0) {
-            deriv = compiled(0);
-    } else if (/z\s*=/.test(clean)) {
-        fn = clean.replace(/z\s*=\s*/i, '').trim() || 'sin(x)*cos(y)';
-    } else {
-            // Use central difference for higher derivatives
-            const coeffs = [[1], [-1,1], [1,-2,1], [-1,3,-3,1], [1,-4,6,-4,1], [-1,5,-10,10,-5,1], [1,-6,15,-20,15,-6,1]];
-            const c = coeffs[Math.min(k, coeffs.length-1)] || [];
+        if (k === 0) { deriv = compiled(0); } else {
+            const c = coeffs[Math.min(k, coeffs.length - 1)] || [];
             let sum = 0;
-            for (let i = 0; i < c.length; i++) {
-                const xv = (i - (c.length-1)/2) * h * 2;
-                const yv = compiled(xv);
-                if (isFinite(yv)) sum += c[i] * yv;
-            }
-            deriv = sum / Math.pow(2*h, k);
+            for (let i = 0; i < c.length; i++) { const yv = compiled((i - (c.length - 1) / 2) * h * 2); if (isFinite(yv)) sum += c[i] * yv; }
+            deriv = sum / Math.pow(2 * h, k);
         }
-        if (isFinite(deriv) && Math.abs(deriv) > 1e-10) {
-            terms.push({ coeff: deriv / factorial(k), order: k });
-        }
+        if (isFinite(deriv) && Math.abs(deriv) > 1e-10) terms.push({ coeff: deriv / factorial(k), order: k });
     }
     return terms;
 }
-
 function factorial(n) { let r = 1; for (let i = 2; i <= n; i++) r *= i; return r; }
-
-function taylorEval(terms, x) {
-    let s = 0;
-    for (const t of terms) s += t.coeff * Math.pow(x, t.order);
-    return s;
-}
+function taylorEval(terms, x) { let s = 0; for (const t of terms) s += t.coeff * Math.pow(x, t.order); return s; }
 
 function renderTaylorSeries(fnText, bounds, maxN) {
     maxN = maxN || 5;
     const terms = generateTaylorTerms(fnText, maxN);
-    const traces = [{ fn: fnText, color: '#3b6eff', label: 'f(x)', width: 3 }];
-    const colors = ['#ff6b6b','#ffbd3b','#6bffbd','#bd6bff','#ff6bbd','#6bbdff'];
+    const traces = [{ fn: fnText, label: 'f(x)' }];
+    const colors = ['#ff6b6b', '#ffbd3b', '#6bffbd', '#bd6bff', '#ff6bbd', '#6bbdff'];
     for (let k = 1; k <= Math.min(maxN, terms.length); k++) {
         const partialTerms = terms.slice(0, k);
-        const tFn = function(x) { return taylorEval(partialTerms, x); };
-        traces.push({ fn: tFn, color: colors[(k-1) % colors.length], label: 'T_' + k + '(x)', width: 1.5, dash: '3,3' });
+        traces.push({ fn: function (x) { return taylorEval(partialTerms, x); }, color: colors[(k - 1) % colors.length], label: 'T_' + k + '(x)' });
     }
     return plotFunction(traces, bounds, { showLegend: true });
 }
 
-// ─── CURVE TRACING ANIMATION ─────────────────────────
+// ─── CURVE TRACING ANIMATION (Canvas) ─────────────────
 let _traceAnimation = null;
-
 function animateCurveTrace(fnText, bounds) {
     stopCurveTrace();
     const compiled = compileExpr(fnText);
@@ -462,41 +503,51 @@ function animateCurveTrace(fnText, bounds) {
     }
     if (pts.length < 2) return;
 
-    // Re-render with overlay
     const container = document.getElementById('desmosContainer');
     if (!container) return;
     const traces = _storedArgs ? [_storedArgs.fn] : [fnText];
-    container.innerHTML = plotFunction(traces, bounds);
+    const canvas = plotFunction(traces, bounds);
+    container.innerHTML = '';
+    container.appendChild(canvas);
 
-    const svg = container.querySelector('svg');
-    if (!svg) return;
-    const pad = 50;
-    const pw = 900 - 2*pad, ph = 500 - 2*pad;
-    function toSX(x) { return pad + ((x - bounds.xMin) / (bounds.xMax - bounds.xMin)) * pw; }
-    function toSY(y) { return pad + ph - ((y - bounds.yMin) / (bounds.yMax - bounds.yMin)) * ph; }
+    const ctx = canvas.getContext('2d');
+    const W = canvas.width, H = canvas.height, P = { t: 32, b: 38, l: 52, r: 24 };
+    const GW = W - P.l - P.r, GH = H - P.t - P.b;
 
-    const ns = 'http://www.w3.org/2000/svg';
-    const dot = document.createElementNS(ns, 'circle');
-    dot.setAttribute('r', '5');
-    dot.setAttribute('fill', '#59ff6b');
-    dot.setAttribute('filter', 'url(#glow)');
-    const trail = document.createElementNS(ns, 'path');
-    trail.setAttribute('fill', 'none');
-    trail.setAttribute('stroke', 'rgba(89,255,107,0.15)');
-    trail.setAttribute('stroke-width', '3');
-    trail.setAttribute('stroke-linecap', 'round');
-    svg.appendChild(trail);
-    svg.appendChild(dot);
-
-    let idx = 0; let trailData = '';
+    let idx = 0, trailPts = [];
     _traceAnimation = setInterval(() => {
-        if (idx >= pts.length) { idx = 0; trailData = ''; }
-        const p = pts[idx];
-        const sx = toSX(p.x), sy = toSY(p.y);
-        dot.setAttribute('cx', sx);
-        dot.setAttribute('cy', sy);
-        trailData += (idx === 0 ? 'M' : 'L') + sx + ',' + sy;
-        trail.setAttribute('d', trailData);
+        if (idx >= pts.length) { idx = 0; trailPts = []; }
+        trailPts.push(pts[idx]);
+
+        // Redraw base plot
+        ctx.fillStyle = TH.bg; ctx.fillRect(0, 0, W, H);
+
+        // Re-draw axes and curve (simplified: re-plot on same canvas)
+        const tempCanvas = plotFunction(traces, bounds);
+        ctx.drawImage(tempCanvas, 0, 0);
+
+        // Draw trail
+        if (trailPts.length > 1) {
+            ctx.strokeStyle = 'rgba(89,255,107,0.15)'; ctx.lineWidth = 3; ctx.lineCap = 'round';
+            ctx.beginPath();
+            trailPts.forEach((p, i) => {
+                const sx = P.l + ((p.x - bounds.xMin) / (bounds.xMax - bounds.xMin)) * GW;
+                const sy = P.t + GH - ((p.y - bounds.yMin) / (bounds.yMax - bounds.yMin)) * GH;
+                i === 0 ? ctx.moveTo(sx, sy) : ctx.lineTo(sx, sy);
+            });
+            ctx.stroke();
+        }
+
+        // Draw dot
+        if (trailPts.length > 0) {
+            const p = pts[idx];
+            const sx = P.l + ((p.x - bounds.xMin) / (bounds.xMax - bounds.xMin)) * GW;
+            const sy = P.t + GH - ((p.y - bounds.yMin) / (bounds.yMax - bounds.yMin)) * GH;
+            ctx.fillStyle = '#59ff6b'; ctx.beginPath(); ctx.arc(sx, sy, 5, 0, 2 * Math.PI); ctx.fill();
+            ctx.shadowColor = '#59ff6b'; ctx.shadowBlur = 12;
+            ctx.beginPath(); ctx.arc(sx, sy, 5, 0, 2 * Math.PI); ctx.fill();
+            ctx.shadowBlur = 0;
+        }
         idx += 3;
     }, 30);
 }
@@ -505,13 +556,9 @@ function stopCurveTrace() {
     if (_traceAnimation) { clearInterval(_traceAnimation); _traceAnimation = null; }
 }
 
-// ─── GRAPH-PER-STEP MORPHING ────────────────────────
-let _stepGraphs = [];  // array of trace configs per step
-
-function setStepGraphs(stepGraphData) {
-    _stepGraphs = stepGraphData || [];
-}
-
+// ─── GRAPH-PER-STEP MORPHING ──────────────────────────
+let _stepGraphs = [];
+function setStepGraphs(stepGraphData) { _stepGraphs = stepGraphData || []; }
 function renderGraphForStep(stepIndex) {
     if (!_stepGraphs || _stepGraphs.length === 0) return;
     const sg = _stepGraphs[stepIndex];
@@ -520,17 +567,21 @@ function renderGraphForStep(stepIndex) {
     const panel = document.getElementById('graphPanel');
     if (!container) return;
     const bounds = (sg.bounds || (_storedArgs ? _storedArgs.bounds : { xMin: -6, xMax: 6, yMin: -4, yMax: 4 }));
-    container.innerHTML = plotFunction(sg.traces || [sg.fn || 'x^2'], bounds, sg.opts || {});
+    const canvas = plotFunction(sg.traces || [sg.fn || 'x^2'], bounds, sg.opts || {});
+    container.innerHTML = ''; container.appendChild(canvas);
     if (panel && !panel.classList.contains('visible')) panel.classList.add('visible');
     initGraphInteraction(sg.fn || 'x^2', bounds);
 }
+function clearStepGraphs() { _stepGraphs = []; }
 
-function clearStepGraphs() {
-    _stepGraphs = [];
-}
-
-// ─── GRAPH INTERACTION ──────────────────────────────
+// ─── GRAPH INTERACTION (Canvas) ──────────────────────
 let _graphState = null;
+
+function mxFromBounds(x, bounds) {
+    const P = { t: 32, b: 38, l: 52, r: 24 };
+    const GW = 800 - P.l - P.r;
+    return P.l + ((x - bounds.xMin) / (bounds.xMax - bounds.xMin)) * GW;
+}
 
 function initGraphInteraction(fnText, bounds) {
     const container = document.getElementById('desmosContainer');
@@ -539,58 +590,44 @@ function initGraphInteraction(fnText, bounds) {
     if (!_graphState) {
         const tip = document.createElement('div');
         tip.className = 'graph-tooltip';
-        tip.style.cssText = 'position:absolute;background:rgba(10,10,20,0.92);color:#cfdfff;padding:5px 10px;border-radius:6px;font-size:12px;font-family:monospace;pointer-events:none;opacity:0;transition:opacity 0.2s;z-index:100;border:1px solid rgba(255,255,255,0.12);backdrop-filter:blur(4px);';
+        tip.style.cssText = 'position:absolute;background:rgba(10,10,20,0.92);color:#cfdfff;padding:4px 8px;border-radius:5px;font-size:11px;font-family:monospace;pointer-events:none;opacity:0;transition:opacity 0.15s;z-index:100;border:0.5px solid rgba(255,255,255,0.08);';
         container.appendChild(tip);
-        _graphState = { fn: fnText, bounds: { ...bounds }, dragging: false, wasDragged: false, dragInfo: null, tooltip: tip, traceTimer: null };
+        _graphState = { fn: fnText, bounds: { ...bounds }, dragging: false, wasDragged: false, dragInfo: null, tooltip: tip };
     } else {
         _graphState.fn = fnText;
         _graphState.bounds = { ...bounds };
     }
 
     if (container.dataset.graphReady) return;
+    const canvas = container.querySelector('canvas');
+    if (!canvas) return;
     container.dataset.graphReady = '1';
 
-    function svgFromContainer() { return container.querySelector('svg'); }
     function screenToMath(cx, cy) {
-        const svg = svgFromContainer();
-        if (!svg) return { x: NaN, y: NaN };
-        const rect = svg.getBoundingClientRect();
-        const vb = svg.viewBox.baseVal;
-        const sx = (cx - rect.left) * (vb.width / rect.width);
-        const sy = (cy - rect.top) * (vb.height / rect.height);
-        const pad = 50;
-        const pw = vb.width - 2 * pad, ph = vb.height - 2 * pad;
-        const mx = _graphState.bounds.xMin + ((sx - pad) / pw) * (_graphState.bounds.xMax - _graphState.bounds.xMin);
-        const my = _graphState.bounds.yMax - ((sy - pad) / ph) * (_graphState.bounds.yMax - _graphState.bounds.yMin);
+        const rect = canvas.getBoundingClientRect();
+        const sx = (cx - rect.left) * (canvas.width / rect.width);
+        const sy = (cy - rect.top) * (canvas.height / rect.height);
+        const P = { t: 32, b: 38, l: 52, r: 24 };
+        const GW = canvas.width - P.l - P.r, GH = canvas.height - P.t - P.b;
+        const b = _graphState.bounds;
+        const mx = b.xMin + ((sx - P.l) / GW) * (b.xMax - b.xMin);
+        const my = b.yMax - ((sy - P.t) / GH) * (b.yMax - b.yMin);
         return { x: mx, y: my };
     }
+
     function reRender() {
         const curFn = _storedArgs ? _storedArgs.fn : _graphState.fn;
-        container.innerHTML = plotFunction(curFn, _graphState.bounds);
+        const newCanvas = plotFunction(curFn, _graphState.bounds);
+        container.innerHTML = '';
+        container.appendChild(newCanvas);
+        container.dataset.graphReady = '1';
         if (_storedArgs) _storedArgs.bounds = { ..._graphState.bounds };
         if (_graphState.tooltip) _graphState.tooltip.style.opacity = '0';
+        _graphState._canvas = newCanvas;
     }
 
-    container.addEventListener('click', (e) => {
-        if (!_graphState) return;
-        if (_graphState.wasDragged) { _graphState.wasDragged = false; return; }
-        if (_graphState.dragging) return;
-        const svg = svgFromContainer();
-        if (!svg || !svg.contains(e.target)) return;
-        const c = screenToMath(e.clientX, e.clientY);
-        if (!isFinite(c.x) || !isFinite(c.y)) return;
-        const tip = _graphState.tooltip;
-        tip.textContent = `(${c.x.toFixed(3)}, ${c.y.toFixed(3)})`;
-        const crect = container.getBoundingClientRect();
-        tip.style.left = Math.min(e.clientX - crect.left + 14, container.clientWidth - 130) + 'px';
-        tip.style.top = Math.max(e.clientY - crect.top - 34, 6) + 'px';
-        tip.style.opacity = '1';
-    });
-
-    container.addEventListener('mousedown', (e) => {
-        if (!_graphState || e.button !== 0) return;
-        const svg = svgFromContainer();
-        if (!svg || !svg.contains(e.target)) return;
+    canvas.addEventListener('mousedown', (e) => {
+        if (e.button !== 0) return;
         _graphState.dragging = true;
         _graphState.wasDragged = false;
         _graphState.dragInfo = { startX: e.clientX, startY: e.clientY, boundsStart: { ..._graphState.bounds } };
@@ -600,18 +637,12 @@ function initGraphInteraction(fnText, bounds) {
 
     document.addEventListener('mousemove', (e) => {
         if (!_graphState || !_graphState.dragging || !_graphState.dragInfo) return;
-        if (Math.abs(e.clientX - _graphState.dragInfo.startX) > 3 || Math.abs(e.clientY - _graphState.dragInfo.startY) > 3) { _graphState.wasDragged = true; }
-        const svg = svgFromContainer();
-        if (!svg) return;
-        const rect = svg.getBoundingClientRect();
-        const vb = svg.viewBox.baseVal;
+        if (Math.abs(e.clientX - _graphState.dragInfo.startX) > 3 || Math.abs(e.clientY - _graphState.dragInfo.startY) > 3) _graphState.wasDragged = true;
         const b = _graphState.dragInfo.boundsStart;
-        const dx = (e.clientX - _graphState.dragInfo.startX) * (vb.width / rect.width) / (vb.width - 100) * (b.xMax - b.xMin);
-        const dy = (_graphState.dragInfo.startY - e.clientY) * (vb.height / rect.height) / (vb.height - 100) * (b.yMax - b.yMin);
-        _graphState.bounds.xMin = b.xMin - dx;
-        _graphState.bounds.xMax = b.xMax - dx;
-        _graphState.bounds.yMin = b.yMin - dy;
-        _graphState.bounds.yMax = b.yMax - dy;
+        const rect = canvas.getBoundingClientRect();
+        const dx = (e.clientX - _graphState.dragInfo.startX) * (canvas.width / rect.width) / (canvas.width - 80) * (b.xMax - b.xMin);
+        const dy = (_graphState.dragInfo.startY - e.clientY) * (canvas.height / rect.height) / (canvas.height - 80) * (b.yMax - b.yMin);
+        _graphState.bounds = { xMin: b.xMin - dx, xMax: b.xMax - dx, yMin: b.yMin - dy, yMax: b.yMax - dy };
         reRender();
     });
 
@@ -620,45 +651,54 @@ function initGraphInteraction(fnText, bounds) {
         if (_graphState.dragging) { _graphState.dragging = false; _graphState.dragInfo = null; container.style.cursor = 'default'; }
     });
 
-    container.addEventListener('wheel', (e) => {
+    canvas.addEventListener('click', (e) => {
+        if (!_graphState) return;
+        if (_graphState.wasDragged) { _graphState.wasDragged = false; return; }
+        if (_graphState.dragging) return;
+        const c = screenToMath(e.clientX, e.clientY);
+        if (!isFinite(c.x) || !isFinite(c.y)) return;
+        const tip = _graphState.tooltip;
+        tip.textContent = '(' + c.x.toFixed(3) + ', ' + c.y.toFixed(3) + ')';
+        const crect = container.getBoundingClientRect();
+        tip.style.left = Math.min(e.clientX - crect.left + 12, container.clientWidth - 120) + 'px';
+        tip.style.top = Math.max(e.clientY - crect.top - 30, 4) + 'px';
+        tip.style.opacity = '1';
+    });
+
+    canvas.addEventListener('wheel', (e) => {
         if (!_graphState) return;
         e.preventDefault();
-        const svg = svgFromContainer();
-        if (!svg) return;
-        const rect = svg.getBoundingClientRect();
-        const vb = svg.viewBox.baseVal;
-        const sx = (e.clientX - rect.left) * (vb.width / rect.width);
-        const sy = (e.clientY - rect.top) * (vb.height / rect.height);
-        const pad = 50;
-        const pw = vb.width - 2 * pad, ph = vb.height - 2 * pad;
+        const rect = canvas.getBoundingClientRect();
+        const sx = (e.clientX - rect.left) * (canvas.width / rect.width);
+        const sy = (e.clientY - rect.top) * (canvas.height / rect.height);
+        const P = { t: 32, b: 38, l: 52, r: 24 };
+        const GW = canvas.width - P.l - P.r, GH = canvas.height - P.t - P.b;
         const b = _graphState.bounds;
-        const mx = b.xMin + ((sx - pad) / pw) * (b.xMax - b.xMin);
-        const my = b.yMax - ((sy - pad) / ph) * (b.yMax - b.yMin);
+        const mx = b.xMin + ((sx - P.l) / GW) * (b.xMax - b.xMin);
+        const my = b.yMax - ((sy - P.t) / GH) * (b.yMax - b.yMin);
         const factor = e.deltaY > 0 ? 1.15 : 0.85;
         const rx = (b.xMax - b.xMin) * factor / 2;
         const ry = (b.yMax - b.yMin) * factor / 2;
-        b.xMin = mx - rx; b.xMax = mx + rx;
-        b.yMin = my - ry; b.yMax = my + ry;
+        _graphState.bounds = { xMin: mx - rx, xMax: mx + rx, yMin: my - ry, yMax: my + ry };
         reRender();
-    });
+    }, { passive: false });
+
+    _graphState._canvas = canvas;
 }
 
-// ─── INTERACTIVE PARAMETER SLIDERS ──────────────────
+// ─── PARAMETER SLIDERS ────────────────────────────────
 let _sliderState = { params: {}, active: false };
-
 function initParamSliders(paramDefs, onUpdate) {
     const panel = document.getElementById('graphPanel');
     if (!panel) return;
     const existing = document.getElementById('paramSliderArea');
     if (existing) existing.remove();
-
     const area = document.createElement('div');
     area.id = 'paramSliderArea';
     area.style.cssText = 'position:absolute;bottom:0;left:0;right:0;padding:0.5rem 1rem;background:rgba(11,20,36,0.88);border-top:1px solid rgba(255,255,255,0.04);z-index:20;';
-    area.innerHTML = `<div style="color:rgba(255,255,255,0.2);font-size:0.65rem;letter-spacing:1px;margin-bottom:0.4rem;">PARAMETERS</div>`;
+    area.innerHTML = '<div style="color:rgba(255,255,255,0.2);font-size:0.65rem;letter-spacing:1px;margin-bottom:0.4rem;">PARAMETERS</div>';
     _sliderState.params = {};
-
-    paramDefs.forEach((def, idx) => {
+    paramDefs.forEach((def) => {
         const val = def.default !== undefined ? def.default : 1;
         _sliderState.params[def.name] = val;
         const row = document.createElement('div');
@@ -683,91 +723,18 @@ function initParamSliders(paramDefs, onUpdate) {
         row.appendChild(input);
         area.appendChild(row);
     });
-
     panel.appendChild(area);
     _sliderState.active = true;
 }
-
 function removeParamSliders() {
     const area = document.getElementById('paramSliderArea');
     if (area) area.remove();
     _sliderState.active = false;
     _sliderState.params = {};
 }
-
 function getSliderParams() { return { ..._sliderState.params }; }
 
-// ─── RENDER (public API) ────────────────────────────
-function renderGraphOnce(qt, raw) {
-    const container = document.getElementById('desmosContainer');
-    const panel = document.getElementById('graphPanel');
-    if (!container) return;
-
-    const fnText = extractPlotExpr(qt, raw);
-    const bounds = detectBounds(qt, raw, fnText);
-    const lower = (qt || raw || '').toLowerCase();
-
-    let svgHtml;
-    // Auto-detect which renderer to use
-    if (/vector\s*field|direction\s*field|slope\s*field/i.test(lower)) {
-        // Extract dx, dy from text
-        const dxMatch = lower.match(/dx\s*=\s*([^,]+)/i);
-        const dyMatch = lower.match(/dy\s*=\s*([^,]+)/i);
-        const dxText = dxMatch ? dxMatch[1].trim() : 'y';
-        const dyText = dyMatch ? dyMatch[1].trim() : '-x';
-        svgHtml = plotVectorField(dxText, dyText, bounds);
-    } else if (/phase\s*plane|trajectory/i.test(lower)) {
-        const dxMatch = lower.match(/dx\s*=\s*([^,]+)/i);
-        const dyMatch = lower.match(/dy\s*=\s*([^,]+)/i);
-        const dxText = dxMatch ? dxMatch[1].trim() : 'y';
-        const dyText = dyMatch ? dyMatch[1].trim() : '-x - y';
-        svgHtml = plotPhasePlane(dxText, dyText, bounds);
-    } else if (/surface|3[dD]|z\s*=/.test(lower) && /[xy]/.test(fnText)) {
-        svgHtml = plotSurface3D(fnText, bounds);
-    } else if (/taylor|series|approximation|polynomial/i.test(lower)) {
-        svgHtml = renderTaylorSeries(fnText, bounds, 5);
-    } else {
-        // Default: build traces with smart features
-        const traces = [{ fn: fnText, color: '#3b6eff', label: 'y = ' + fnText, width: 3 }];
-        if (/integrate|∫/.test(lower)) {
-            traces[0].integral = [0, 3];
-            traces[0].riemann = { n: 6, a: 0, b: 3 };
-        }
-        if (/differentiate|derivative/.test(lower)) {
-            traces[0].derivative = true;
-        }
-        svgHtml = plotFunction(traces, bounds, { });
-    }
-
-    container.innerHTML = svgHtml;
-    graphRendered = true;
-    storeGraphArgs(qt, raw, fnText, bounds);
-
-    // Auto-show parameter sliders for explicit quadratic/parabola problems
-    if (/quadratic|parabola/i.test(lower) && !document.getElementById('paramSliderArea')) {
-        initParamSliders([
-            { name: 'a', default: 1, min: -5, max: 5 },
-            { name: 'b', default: 0, min: -5, max: 5 },
-            { name: 'c', default: 0, min: -5, max: 5 },
-        ], (params) => {
-            const expr = `${params.a}*x^2 + ${params.b}*x + ${params.c}`;
-            _storedArgs.fn = expr;
-            const container = document.getElementById('desmosContainer');
-            if (container) {
-                container.innerHTML = plotFunction(expr, _storedArgs.bounds);
-                initGraphInteraction(expr, _storedArgs.bounds);
-            }
-        });
-    }
-
-    initGraphInteraction(fnText, bounds);
-    if (panel) panel.classList.add('visible');
-}
-
-let _storedArgs = null;
-function storeGraphArgs(qt, raw, fn, bounds) { _storedArgs = { qt, raw, fn, bounds }; }
-function getStoredGraphArgs() { return _storedArgs; }
-
+// ─── DETECT BOUNDS ────────────────────────────────────
 function detectBounds(qt, raw, fnText) {
     const lower = (qt || raw || '').toLowerCase();
     if (/integrate|∫/.test(lower)) return { xMin: -1, xMax: 7, yMin: -3, yMax: 3 };
@@ -783,33 +750,98 @@ function detectBounds(qt, raw, fnText) {
     return { xMin: -6, xMax: 6, yMin: -4, yMax: 4 };
 }
 
-function reShowGraph() {
-    const args = _storedArgs;
-    if (!args) return;
+// ─── RENDER (public API) ──────────────────────────────
+function renderGraphOnce(qt, raw) {
     const container = document.getElementById('desmosContainer');
     const panel = document.getElementById('graphPanel');
     if (!container) return;
-    const lower = (args.qt || args.raw || '').toLowerCase();
-    let svgHtml;
+
+    const fnText = extractPlotExpr(qt, raw);
+    const bounds = detectBounds(qt, raw, fnText);
+    const lower = (qt || raw || '').toLowerCase();
+
+    let canvas;
     if (/vector\s*field|direction\s*field|slope\s*field/i.test(lower)) {
         const dxMatch = lower.match(/dx\s*=\s*([^,]+)/i);
         const dyMatch = lower.match(/dy\s*=\s*([^,]+)/i);
-        svgHtml = plotVectorField(dxMatch?.[1]?.trim()||'y', dyMatch?.[1]?.trim()||'-x', args.bounds);
+        canvas = plotVectorField(dxMatch ? dxMatch[1].trim() : 'y', dyMatch ? dyMatch[1].trim() : '-x', bounds);
     } else if (/phase\s*plane|trajectory/i.test(lower)) {
         const dxMatch = lower.match(/dx\s*=\s*([^,]+)/i);
         const dyMatch = lower.match(/dy\s*=\s*([^,]+)/i);
-        svgHtml = plotPhasePlane(dxMatch?.[1]?.trim()||'y', dyMatch?.[1]?.trim()||'-x-y', args.bounds);
+        canvas = plotPhasePlane(dxMatch ? dxMatch[1].trim() : 'y', dyMatch ? dyMatch[1].trim() : '-x - y', bounds);
+    } else if (/surface|3[dD]|z\s*=/.test(lower) && /[xy]/.test(fnText)) {
+        canvas = plotSurface3D(fnText, bounds);
+    } else if (/taylor|series|approximation|polynomial/i.test(lower)) {
+        canvas = renderTaylorSeries(fnText, bounds, 5);
+    } else {
+        const traces = [{ fn: fnText, color: '#3b6eff', label: 'y = ' + fnText, width: 3 }];
+        if (/integrate|∫/.test(lower)) { traces[0].integral = [0, 3]; traces[0].riemann = { n: 60, a: 0.5, b: 2.5 }; }
+        if (/differentiate|derivative/.test(lower)) traces[0].derivative = true;
+        canvas = plotFunction(traces, bounds, {});
+    }
+
+    container.innerHTML = '';
+    container.appendChild(canvas);
+    graphRendered = true;
+    storeGraphArgs(qt, raw, fnText, bounds);
+
+    if (/quadratic|parabola/i.test(lower) && !document.getElementById('paramSliderArea')) {
+        initParamSliders([
+            { name: 'a', default: 1, min: -5, max: 5 },
+            { name: 'b', default: 0, min: -5, max: 5 },
+            { name: 'c', default: 0, min: -5, max: 5 },
+        ], (params) => {
+            const expr = `${params.a}*x^2 + ${params.b}*x + ${params.c}`;
+            _storedArgs.fn = expr;
+            const c = document.getElementById('desmosContainer');
+            if (c) { c.innerHTML = ''; c.appendChild(plotFunction(expr, _storedArgs.bounds)); initGraphInteraction(expr, _storedArgs.bounds); }
+        });
+    }
+
+    initGraphInteraction(fnText, bounds);
+    if (panel) panel.classList.add('visible');
+}
+
+let _storedArgs = null;
+function storeGraphArgs(qt, raw, fn, bounds) { _storedArgs = { qt, raw, fn, bounds }; }
+function getStoredGraphArgs() { return _storedArgs; }
+
+function reShowGraph() {
+    const args = _storedArgs;
+    const container = document.getElementById('desmosContainer');
+    const panel = document.getElementById('graphPanel');
+    if (!container) return;
+
+    if (!args) {
+        container.innerHTML = '';
+        container.appendChild(plotFunction([{ fn: 'x^2', label: 'y = x^2' }], null, {}));
+        if (panel) panel.classList.add('visible');
+        return;
+    }
+
+    const lower = (args.qt || args.raw || '').toLowerCase();
+    let canvas;
+    if (/vector\s*field|direction\s*field|slope\s*field/i.test(lower)) {
+        const dxMatch = lower.match(/dx\s*=\s*([^,]+)/i);
+        const dyMatch = lower.match(/dy\s*=\s*([^,]+)/i);
+        canvas = plotVectorField(dxMatch?.[1]?.trim() || 'y', dyMatch?.[1]?.trim() || '-x', args.bounds);
+    } else if (/phase\s*plane|trajectory/i.test(lower)) {
+        const dxMatch = lower.match(/dx\s*=\s*([^,]+)/i);
+        const dyMatch = lower.match(/dy\s*=\s*([^,]+)/i);
+        canvas = plotPhasePlane(dxMatch?.[1]?.trim() || 'y', dyMatch?.[1]?.trim() || '-x-y', args.bounds);
     } else if (/surface|3[dD]|z\s*=/.test(lower) && /[xy]/.test(args.fn)) {
-        svgHtml = plotSurface3D(args.fn, args.bounds);
+        canvas = plotSurface3D(args.fn, args.bounds);
     } else if (/taylor|series|approximation/i.test(lower)) {
-        svgHtml = renderTaylorSeries(args.fn, args.bounds, 5);
+        canvas = renderTaylorSeries(args.fn, args.bounds, 5);
     } else {
         const traces = [{ fn: args.fn, color: '#3b6eff', label: 'y = ' + args.fn, width: 3 }];
-        if (/integrate|∫/.test(lower)) { traces[0].integral = [0, 3]; traces[0].riemann = { n: 6, a: 0, b: 3 }; }
+        if (/integrate|∫/.test(lower)) { traces[0].integral = [0, 3]; traces[0].riemann = { n: 60, a: 0.5, b: 2.5 }; }
         if (/differentiate|derivative/.test(lower)) traces[0].derivative = true;
-        svgHtml = plotFunction(traces, args.bounds, { });
+        canvas = plotFunction(traces, args.bounds, {});
     }
-    container.innerHTML = svgHtml;
+
+    container.innerHTML = '';
+    container.appendChild(canvas);
     initGraphInteraction(args.fn, args.bounds);
     if (panel) panel.classList.add('visible');
 }
