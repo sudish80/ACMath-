@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Math Cinema · AI-Powered Step-by-Step Solver</title>
+    <link rel="stylesheet" href="css/style.css" />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+</head>
+<body>
+
+<!-- ─── CHUNK LOADER ────────────────────────────────── -->
+<div id="chunkLoader">
+    <h2>Math Cinema</h2>
+    <div class="chunk-loader-track">
+        <div class="chunk-loader-bar" id="chunkBar"></div>
+    </div>
+    <div class="chunk-loader-info">
+        <span>LOADING</span>
+        <span class="chunk-name" id="chunkLabel">modules</span>
+        <span id="chunkStatus">0 / 6</span>
+    </div>
+</div>
+
+<!-- ─── INPUT OVERLAY ────────────────────────────────── -->
+<div id="inputOverlay">
+    <h1>Math Cinema</h1>
+    <p class="tagline">AI-Powered Step-by-Step Solver</p>
+    <div class="input-card">
+        <div class="loading-overlay" id="loadingOverlay">
+            <div class="loading-spinner"></div>
+            <div class="loading-text">SOLVING<span class="dots"><span>.</span><span>.</span><span>.</span></span></div>
+            <div class="solving-phase" id="solvingPhase">calling LLM · generating steps</div>
+        </div>
+        <textarea id="questionInput" placeholder="Enter a math question... e.g. ∫ sec³(x) dx, or solve x² + 2x + 1 = 0"></textarea>
+        <div class="model-selector-row">
+            <span class="model-label">MODEL</span>
+            <select id="modelSelect">
+                <option value="auto">Auto (70b → 8b)</option>
+                <option value="70b">70b precise</option>
+                <option value="8b">8b fast</option>
+            </select>
+        </div>
+        <div id="enhancerPreview">
+            <div class="preview-header">
+                <span class="label">⟫ ENHANCED</span>
+                <span class="status-badge" id="statusBadge">READY</span>
+            </div>
+            <div class="rendered-math" id="enhancedText">\(\)</div>
+            <div class="demo-graph-area" id="demoGraph"></div>
+            <div class="typo-notice" id="typoNotice">
+                <span>✎</span>
+                <span class="fixed" id="typoFixed"></span>
+            </div>
+            <div class="suggestion-chips" id="suggestionChips">
+                <span class="hint">OPERATION</span>
+            </div>
+        </div>
+        <div class="input-actions">
+            <button id="solveBtn"><span class="label">SOLVE</span><span class="spinner">SOLVING...</span></button>
+            <div id="errorMsg"></div>
+            <div class="timeout-recovery" id="timeoutRecovery">
+                <div class="recovery-title">⏱ REQUEST TIMED OUT</div>
+                <div class="recovery-actions">
+                    <button class="recovery-btn primary" id="retryBtn">⟳ RETRY</button>
+                    <button class="recovery-btn" id="simplifyBtn">✂ SIMPLIFY QUESTION</button>
+                </div>
+            </div>
+        </div>
+        <div class="examples">
+            <span class="example-chip">∫ sec³(x) dx</span>
+            <span class="example-chip">x² + 2x + 1 = 0</span>
+            <span class="example-chip">d/dx sin(x²)</span>
+            <span class="example-chip">∑_{n=1}^{∞} 1/n²</span>
+            <span class="example-chip">lim_{x→0} sin(x)/x</span>
+            <span class="example-chip">(1+2i)/(3-i)</span>
+        </div>
+    </div>
+</div>
+
+<!-- ─── CINEMA CONTAINER ─────────────────────────────── -->
+<div class="cinema-container hidden" id="cinemaContainer">
+    <div class="cinema-header">
+        <span class="problem-label" id="problemLabel">⏎ AWAITING QUESTION</span>
+        <span class="method-badge" id="methodBadge"></span>
+        <button class="new-problem-btn" id="newProblemBtn">✕ NEW</button>
+    </div>
+
+    <div class="cinema-placeholder" id="cinemaPlaceholder">
+        <div class="placeholder-icon">∫</div>
+        <div class="placeholder-title">YOUR SOLUTION WILL APPEAR HERE</div>
+        <div class="placeholder-sub">Enter a math problem and press SOLVE</div>
+    </div>
+
+    <div class="solution-end-banner" id="solutionEndBanner">
+        <span class="check">✓</span>
+        <span class="text">SOLUTION COMPLETE</span>
+    </div>
+
+    <div class="zoom-hint" id="zoomHint">scroll to zoom · drag to pan</div>
+
+    <!-- ─── GRAPH PANEL ─────────────────────────────── -->
+    <div class="graph-panel" id="graphPanel">
+        <div class="graph-panel-header">
+            <span class="graph-panel-title">GRAPH</span>
+            <div style="display:flex;gap:0.4rem;">
+                <button class="graph-panel-btn" id="traceBtn">◉ TRACE</button>
+                <button class="graph-panel-close" id="closeGraphPanel">✕</button>
+            </div>
+        </div>
+        <div class="desmos-container" id="desmosContainer"></div>
+    </div>
+
+    <svg id="svgStage" viewBox="0 0 2000 1000" preserveAspectRatio="xMidYMid meet">
+        <defs>
+            <filter id="glow">
+                <feGaussianBlur stdDeviation="3" result="blur" />
+                <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+            </filter>
+            <filter id="softGlow">
+                <feGaussianBlur stdDeviation="6" result="blur" />
+                <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+            </filter>
+            <linearGradient id="highlightGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+                <stop offset="0%" stop-color="#3b6eff" stop-opacity="0.3" />
+                <stop offset="100%" stop-color="#3b6eff" stop-opacity="0" />
+            </linearGradient>
+        </defs>
+        <g id="equationGroup" transform="translate(700, 430)"></g>
+    </svg>
+
+    <div class="progress-dots" id="dotsContainer"></div>
+
+    <div class="ui-overlay">
+        <div class="controls-group">
+            <button class="ctrl-btn active" id="playBtn">⏸ PAUSE</button>
+            <button class="ctrl-btn" id="resetBtn">↺ RESET</button>
+            <button class="ctrl-btn" id="speedBtn">⏩ 2x</button>
+            <button class="ctrl-btn" id="graphBtn">📈 GRAPH</button>
+            <button class="ctrl-btn" id="exportBtn">📄 EXPORT PDF</button>
+            <button class="ctrl-btn" id="followUpBtn">💬 ASK FOLLOW-UP</button>
+        </div>
+        <div class="step-indicator">STEP <span id="stepNum">1</span> / <span id="totalSteps">5</span></div>
+    </div>
+</div>
+
+<!-- ─── FOLLOW-UP CHAT ─────────────────────────────── -->
+<div id="followUpModal" class="modal-overlay hidden">
+    <div class="chat-card">
+        <div class="chat-card-header">
+            <span class="chat-card-title">CONVERSATION</span>
+            <button id="closeFollowUp" class="chat-card-close">✕</button>
+        </div>
+        <div class="chat-thread" id="chatThread">
+            <div class="chat-placeholder" id="chatPlaceholder">
+                <span class="ph-icon">💬</span>
+                <span class="ph-text">Ask a follow-up question about the current solution</span>
+            </div>
+        </div>
+        <div class="chat-input-area">
+            <div class="chat-thinking hidden" id="chatThinking">
+                <span class="td"></span><span class="td"></span><span class="td"></span>
+            </div>
+            <div class="chat-input-row">
+                <textarea id="followUpInput" placeholder="Ask a follow-up..." rows="1"></textarea>
+                <button id="sendFollowUp" class="chat-send-btn">→</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js" id="MathJax-script" async></script>
+<script src="js/loader.js"></script>
+</body>
+</html>
