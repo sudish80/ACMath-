@@ -647,14 +647,14 @@ function initGraphInteraction(fnText, bounds) {
 let _sliderState = { params: {}, active: false };
 
 function initParamSliders(paramDefs, onUpdate) {
-    const header = document.querySelector('.graph-panel-header');
-    if (!header) return;
+    const panel = document.getElementById('graphPanel');
+    if (!panel) return;
     const existing = document.getElementById('paramSliderArea');
     if (existing) existing.remove();
 
     const area = document.createElement('div');
     area.id = 'paramSliderArea';
-    area.style.cssText = 'padding:0.5rem 1rem;border-bottom:1px solid rgba(255,255,255,0.04);flex-shrink:0;';
+    area.style.cssText = 'position:absolute;bottom:0;left:0;right:0;padding:0.5rem 1rem;background:rgba(11,20,36,0.88);border-top:1px solid rgba(255,255,255,0.04);z-index:20;';
     area.innerHTML = `<div style="color:rgba(255,255,255,0.2);font-size:0.65rem;letter-spacing:1px;margin-bottom:0.4rem;">PARAMETERS</div>`;
     _sliderState.params = {};
 
@@ -684,7 +684,7 @@ function initParamSliders(paramDefs, onUpdate) {
         area.appendChild(row);
     });
 
-    header.parentNode.insertBefore(area, header.nextSibling);
+    panel.appendChild(area);
     _sliderState.active = true;
 }
 

@@ -550,38 +550,28 @@ body {
 .chat-send-btn:hover { background: rgba(59,110,255,0.35); }
 .chat-send-btn:disabled { opacity: 0.3; cursor: default; }
 
-/* ─── GRAPH PANEL ──────────────────────────────── */
+/* ─── GRAPH PANEL (full-area, chrome-free) ──────── */
 .graph-panel {
-    position: absolute; top: 0; right: 0; width: 520px; height: 100%;
-    z-index: 18; background: rgba(11,20,36,0.94);
-    backdrop-filter: blur(10px); border-left: 1px solid rgba(255,255,255,0.05);
+    position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+    z-index: 18; background: rgba(11,20,36,0.92);
+    backdrop-filter: blur(8px);
     display: none; flex-direction: column;
-    transform: translateX(100%); transition: transform 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+    transform: translateY(8px); transition: transform 0.35s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.25s;
+    opacity: 0;
 }
-.graph-panel.visible { display: flex; transform: translateX(0); }
-.graph-panel-header {
-    display: flex; justify-content: space-between; align-items: center;
-    padding: 1rem 1.2rem; border-bottom: 1px solid rgba(255,255,255,0.04);
+.graph-panel.visible { display: flex; transform: translateY(0); opacity: 1; }
+.graph-trace-btn {
+    position: absolute; top: 12px; right: 12px; z-index: 19;
+    background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08);
+    color: rgba(255,255,255,0.25); font-size: 0.6rem; letter-spacing: 0.5px;
+    cursor: pointer; padding: 0.2rem 0.7rem; border-radius: 6px;
+    font-family: inherit; transition: all 0.2s;
 }
-.graph-panel-title {
-    color: rgba(255,255,255,0.3); font-size: 0.7rem; letter-spacing: 2px;
-}
-.graph-panel-close {
-    background: none; border: none; color: rgba(255,255,255,0.3);
-    font-size: 1rem; cursor: pointer; padding: 0.2rem;
-}
-.graph-panel-close:hover { color: white; }
-.graph-panel-btn {
-    background: none; border: 1px solid rgba(255,255,255,0.08);
-    color: rgba(255,255,255,0.3); font-size: 0.65rem;
-    cursor: pointer; padding: 0.15rem 0.6rem; border-radius: 6px;
-    font-family: inherit; letter-spacing: 0.5px; transition: all 0.2s;
-}
-.graph-panel-btn:hover { color: white; border-color: rgba(59,110,255,0.3); background: rgba(59,110,255,0.1); }
-.graph-panel-btn.active { color: #59ff6b; border-color: rgba(89,255,107,0.3); background: rgba(89,255,107,0.08); }
+.graph-trace-btn:hover { color: white; border-color: rgba(59,110,255,0.3); background: rgba(59,110,255,0.1); }
+.graph-trace-btn.active { color: #59ff6b; border-color: rgba(89,255,107,0.3); background: rgba(89,255,107,0.08); }
 .desmos-container {
-    flex: 1; width: 100%; min-height: 300px;
-    position: relative;
+    flex: 1; width: 100%; height: 100%;
+    position: relative; overflow: hidden;
 }
 .desmos-container svg {
     width: 100%; height: 100%; position: absolute;
@@ -593,7 +583,6 @@ body {
 .dcg-graphing-calculator .dcg-tooltip-container { display: none; }
 
 @media (max-width: 700px) {
-    .graph-panel { width: 100%; }
     #inputOverlay h1 { font-size: 2rem; }
     .cinema-container { height: 85vh; max-height: 600px; border-radius: 1.8rem; }
     .ui-overlay { padding: 0 1.2rem; flex-direction: column; gap: 0.8rem; align-items: stretch; }

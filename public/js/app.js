@@ -314,7 +314,6 @@
     // ─── GRAPH PANEL ────────────────────────────────────
     const graphBtn = document.getElementById('graphBtn');
     const graphPanel = document.getElementById('graphPanel');
-    const closeGraphPanel = document.getElementById('closeGraphPanel');
 
     if (graphBtn) {
         graphBtn.addEventListener('click', () => {
@@ -322,15 +321,10 @@
                 graphPanel.classList.remove('visible');
                 graphPanel.dataset.userToggled = '0';
             } else if (lastRaw) {
+                graphPanel.classList.add('visible');
                 graphPanel.dataset.userToggled = '1';
                 reShowGraph();
             }
-        });
-    }
-    if (closeGraphPanel) {
-        closeGraphPanel.addEventListener('click', () => {
-            graphPanel.classList.remove('visible');
-            graphPanel.dataset.userToggled = '0';
         });
     }
 
