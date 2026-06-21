@@ -68,6 +68,8 @@ const TH = {
     get curve() { return isDark() ? '#f0b37a' : '#b85c10'; },
     get dot() { return isDark() ? '#fff5e6' : '#b85c10'; },
 };
+// ─── ANIMATION STATE ──────────────────────────────────
+let _sweepAnim = { phase: 0, running: false, raf: null, lastT: null, bounds: null, fnText: '', traces: null };
 
 // ─── CANVAS MATH GRAPH ENGINE ─────────────────────────
 function plotFunction(traces, bounds, opts) {
@@ -85,6 +87,10 @@ function plotFunction(traces, bounds, opts) {
     canvas.width = W; canvas.height = H;
     canvas.style.cssText = 'width:100%;height:100%;display:block';
     const ctx = canvas.getContext('2d');
+
+    // Sweep animation support
+    const sweepX = opts.sweepX !== undefined ? opts.sweepX : bounds.xMax + 1;
+    const sweepProgress = (sweepX - bounds.xMin) / (bounds.xMax - bounds.xMin);
 
     // Background
     ctx.fillStyle = TH.bg; ctx.fillRect(0, 0, W, H);
@@ -105,30 +111,19 @@ function plotFunction(traces, bounds, opts) {
     if (bounds.xMin < 0 && bounds.xMax > 0) { ctx.beginPath(); ctx.moveTo(mx(0), P.t); ctx.lineTo(mx(0), H - P.b); ctx.stroke(); }
     if (bounds.yMin < 0 && bounds.yMax > 0) { ctx.beginPath(); ctx.moveTo(P.l, my(0)); ctx.lineTo(W - P.r, my(0)); ctx.stroke(); }
 
-    // Labels
+    // Tick labels
     ctx.fillStyle = TH.txt; ctx.font = '10px monospace';
     ctx.textAlign = 'center'; ctx.textBaseline = 'top';
-    for (let xg = Math.ceil(bounds.xMin); xg <= bounds.xMax; xg++) {
-        if (xg === 0) continue;
-        ctx.fillText(String(xg), mx(xg), H - P.b + 4);
-    }
+    for (let xg = Math.ceil(bounds.xMin); xg <= bounds.xMax; xg++) { if (xg === 0) continue; ctx.fillText(String(xg), mx(xg), H - P.b + 4); }
     ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
-    for (let yg = Math.ceil(bounds.yMin); yg <= bounds.yMax; yg++) {
-        if (yg === 0) continue;
-        ctx.fillText(String(yg), P.l - 6, my(yg));
-    }
+    for (let yg = Math.ceil(bounds.yMin); yg <= bounds.yMax; yg++) { if (yg === 0) continue; ctx.fillText(String(yg), P.l - 6, my(yg)); }
     if (bounds.xMin < 0 && bounds.xMax > 0 && bounds.yMin < 0 && bounds.yMax > 0) {
-        ctx.textAlign = 'right'; ctx.textBaseline = 'top';
-        ctx.fillText('0', mx(0) - 4, my(0) + 3);
+        ctx.textAlign = 'right'; ctx.textBaseline = 'top'; ctx.fillText('0', mx(0) - 4, my(0) + 3);
     }
-    // Axis labels
     ctx.fillStyle = TH.txt; ctx.font = '11px monospace';
-    ctx.textAlign = 'left'; ctx.textBaseline = 'bottom';
-    ctx.fillText('x', W - P.r - 2, my(0) - 4);
-    ctx.textAlign = 'left'; ctx.textBaseline = 'top';
-    ctx.fillText('y', mx(0) + 4, P.t + 4);
+    ctx.textAlign = 'left'; ctx.textBaseline = 'bottom'; ctx.fillText('x', W - P.r - 2, my(0) - 4);
+    ctx.textAlign = 'left'; ctx.textBaseline = 'top'; ctx.fillText('y', mx(0) + 4, P.t + 4);
 
-    // Render each trace
     const compiledTraces = [];
     const legendItems = [];
     traces.forEach((tr, idx) => {
@@ -138,19 +133,90 @@ function plotFunction(traces, bounds, opts) {
         const compiled = typeof fn === 'function' ? fn : compileExpr(fn);
         compiledTraces.push({ compiled, tr, color, label });
 
-        // Build sample points for curve
-        const pts = [];
-        for (let xv = bounds.xMin; xv <= bounds.xMax; xv += (bounds.xMax - bounds.xMin) / 400) {
-            const yv = compiled(xv);
-            if (yv !== undefined && yv !== null && isFinite(yv) && yv > bounds.yMin - 2 && yv < bounds.yMax + 2) {
-                pts.push({ x: mx(xv), y: my(yv) });
-            } else if (pts.length > 1) {
-                pts.push({ break: true });
+        // Faded full curve behind
+        ctx.beginPath(); ctx.strokeStyle = isDark() ? 'rgba(100,130,190,0.13)' : 'rgba(80,110,160,0.1)'; ctx.lineWidth = 1;
+        let started = false;
+        for (let i = 0; i <= 500; i++) {
+            const x = bounds.xMin + i / 500 * (bounds.xMax - bounds.xMin);
+            const yv = compiled(x);
+            if (isFinite(yv) && yv > bounds.yMin - 2 && yv < bounds.yMax + 2) {
+                if (!started) { ctx.moveTo(mx(x), my(yv)); started = true; } else ctx.lineTo(mx(x), my(yv));
+            } else { started = false; }
+        }
+        ctx.stroke();
+
+        // Animated Riemann strips (sweep)
+        if (tr.riemann) {
+            const N_MIN = 40, N_MAX = 320;
+            const t = Math.pow(Math.max(0, Math.min(1, sweepProgress)), 1.6);
+            const N = Math.round(N_MIN + t * (N_MAX - N_MIN));
+            const a = tr.riemann.a !== undefined ? tr.riemann.a : bounds.xMin;
+            const b = tr.riemann.b !== undefined ? tr.riemann.b : bounds.xMax;
+            const dx = (b - a) / N;
+            const pxW = Math.max(0.5, mx(a + dx) - mx(a));
+            const pyB = my(0);
+
+            let area = 0;
+            for (let i = 0; i < N; i++) {
+                const xL = a + i * dx;
+                if (xL >= sweepX) break;
+                const xM = xL + dx / 2;
+                const yv = compiled(xM);
+                if (!isFinite(yv)) continue;
+                area += yv * dx;
+                const pyT = my(yv), rTop = Math.min(pyT, pyB), rH = Math.abs(pyT - pyB);
+                if (yv >= 0) {
+                    const hue = 160 + 20 * ((xM - bounds.xMin) / (bounds.xMax - bounds.xMin));
+                    ctx.fillStyle = isDark() ? `hsla(${hue},60%,50%,0.68)` : `hsla(${hue},65%,30%,0.60)`;
+                } else {
+                    ctx.fillStyle = isDark() ? 'hsla(0,65%,58%,0.68)' : 'hsla(0,60%,36%,0.60)';
+                }
+                ctx.fillRect(mx(xL), rTop, pxW, rH);
+                if (pxW > 5) {
+                    ctx.strokeStyle = isDark() ? 'rgba(220,240,230,0.12)' : 'rgba(0,80,40,0.1)';
+                    ctx.lineWidth = 0.5;
+                    ctx.strokeRect(mx(xL), rTop, pxW, rH);
+                }
             }
+
+            // Stage label
+            const stage = N <= 80 ? 'wide blocks →' : N <= 160 ? 'shrinking →' : N <= 250 ? 'getting thinner →' : 'thin strips ✓';
+            ctx.fillStyle = isDark() ? 'rgba(180,220,210,0.35)' : 'rgba(30,100,80,0.4)';
+            ctx.font = '12px monospace';
+            ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+            ctx.fillText(`n = ${N}  ${stage}`, P.l + 10, P.t + 6);
+
+            // Bright curve up to sweepX
+            if (sweepX > bounds.xMin + 0.05) {
+                ctx.beginPath(); ctx.strokeStyle = TH.curve; ctx.lineWidth = 2.4; ctx.lineJoin = 'round';
+                const steps = Math.max(60, Math.round(sweepProgress * 380));
+                started = false;
+                for (let i = 0; i <= steps; i++) {
+                    const x = bounds.xMin + i / steps * (sweepX - bounds.xMin);
+                    const yv = compiled(x);
+                    if (isFinite(yv) && yv > bounds.yMin - 2 && yv < bounds.yMax + 2) {
+                        if (!started) { ctx.moveTo(mx(x), my(yv)); started = true; } else ctx.lineTo(mx(x), my(yv));
+                    } else { started = false; }
+                }
+                ctx.stroke();
+            }
+
+            // Glowing dot at sweep front
+            const dotY = compiled(sweepX);
+            if (isFinite(dotY)) {
+                ctx.fillStyle = TH.dot;
+                ctx.beginPath(); ctx.arc(mx(sweepX), my(dotY), 5, 0, 2 * Math.PI); ctx.fill();
+            }
+
+            // Dashed vertical marker
+            ctx.strokeStyle = isDark() ? 'rgba(200,210,240,0.15)' : 'rgba(50,80,160,0.15)';
+            ctx.lineWidth = 1; ctx.setLineDash([4, 6]);
+            ctx.beginPath(); ctx.moveTo(mx(sweepX), P.t); ctx.lineTo(mx(sweepX), H - P.b); ctx.stroke();
+            ctx.setLineDash([]);
         }
 
-        // Integral shading (thin strips)
-        if (tr.integral) {
+        // Integral shading (static, behind sweep)
+        if (tr.integral && sweepX >= bounds.xMax) {
             try {
                 const a = tr.integral[0] || 0, b = tr.integral[1] || 3;
                 const dx = (b - a) / 120;
@@ -166,51 +232,6 @@ function plotFunction(traces, bounds, opts) {
             } catch (e) {}
         }
 
-        // Riemann sums (thin strips)
-        if (tr.riemann) {
-            const n = tr.riemann.n || 20;
-            const a = tr.riemann.a !== undefined ? tr.riemann.a : 0;
-            const b = tr.riemann.b !== undefined ? tr.riemann.b : 3;
-            const dx = (b - a) / n;
-            for (let i = 0; i < n; i++) {
-                const xm = a + (i + 0.5) * dx;
-                const yv = compiled(xm);
-                if (!isFinite(yv)) continue;
-                const px = mx(a + i * dx), pw2 = Math.max(0.5, mx(a + (i + 1) * dx) - mx(a + i * dx));
-                const pyT = my(yv), pyB = my(0);
-                const rTop = Math.min(pyT, pyB), rH = Math.abs(pyT - pyB);
-                ctx.fillStyle = yv >= 0 ? TH.pos : TH.neg;
-                ctx.fillRect(px, rTop, pw2, rH);
-            }
-        }
-
-        // Faded full curve behind
-        ctx.beginPath(); ctx.strokeStyle = isDark() ? 'rgba(100,130,190,0.15)' : 'rgba(80,110,160,0.12)'; ctx.lineWidth = 1;
-        let started = false;
-        for (let i = 0; i <= 500; i++) {
-            const x = bounds.xMin + i / 500 * (bounds.xMax - bounds.xMin);
-            const yv = compiled(x);
-            if (isFinite(yv) && yv > bounds.yMin - 2 && yv < bounds.yMax + 2) {
-                if (!started) { ctx.moveTo(mx(x), my(yv)); started = true; }
-                else ctx.lineTo(mx(x), my(yv));
-            } else { started = false; }
-        }
-        ctx.stroke();
-
-        // Bright curve
-        ctx.beginPath(); ctx.strokeStyle = color; ctx.lineWidth = 2.5;
-        ctx.lineJoin = 'round'; ctx.lineCap = 'round';
-        started = false;
-        for (let i = 0; i <= 500; i++) {
-            const x = bounds.xMin + i / 500 * (bounds.xMax - bounds.xMin);
-            const yv = compiled(x);
-            if (isFinite(yv) && yv > bounds.yMin - 2 && yv < bounds.yMax + 2) {
-                if (!started) { ctx.moveTo(mx(x), my(yv)); started = true; }
-                else ctx.lineTo(mx(x), my(yv));
-            } else { started = false; }
-        }
-        ctx.stroke();
-
         // Derivative tangent
         if (tr.derivative) {
             try {
@@ -221,14 +242,26 @@ function plotFunction(traces, bounds, opts) {
                     const tly = tf + tfd * (tlx - txv), trY = tf + tfd * (trx - txv);
                     if (isFinite(tly) && isFinite(trY)) {
                         ctx.strokeStyle = 'rgba(240,179,122,0.4)'; ctx.lineWidth = 1.5;
-                        ctx.setLineDash([4, 3]);
-                        ctx.beginPath(); ctx.moveTo(mx(tlx), my(tly)); ctx.lineTo(mx(trx), my(trY)); ctx.stroke();
-                        ctx.setLineDash([]);
-                        ctx.fillStyle = 'rgba(240,179,122,0.5)'; ctx.beginPath();
-                        ctx.arc(mx(txv), my(tf), 4, 0, 2 * Math.PI); ctx.fill();
+                        ctx.setLineDash([4, 3]); ctx.beginPath(); ctx.moveTo(mx(tlx), my(tly)); ctx.lineTo(mx(trx), my(trY)); ctx.stroke(); ctx.setLineDash([]);
+                        ctx.fillStyle = 'rgba(240,179,122,0.5)'; ctx.beginPath(); ctx.arc(mx(txv), my(tf), 4, 0, 2 * Math.PI); ctx.fill();
                     }
                 }
             } catch (e) {}
+        }
+
+        // Non-sweep curve (drawn when no riemann or sweep complete)
+        if (!tr.riemann || sweepX >= bounds.xMax) {
+            ctx.beginPath(); ctx.strokeStyle = color; ctx.lineWidth = 2.5; ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+            started = false;
+            const drawLimit = tr.riemann ? sweepX : bounds.xMax;
+            for (let i = 0; i <= 500; i++) {
+                const x = bounds.xMin + i / 500 * (drawLimit - bounds.xMin);
+                const yv = compiled(x);
+                if (isFinite(yv) && yv > bounds.yMin - 2 && yv < bounds.yMax + 2) {
+                    if (!started) { ctx.moveTo(mx(x), my(yv)); started = true; } else ctx.lineTo(mx(x), my(yv));
+                } else { started = false; }
+            }
+            ctx.stroke();
         }
 
         if (label) legendItems.push({ color, label });
@@ -241,12 +274,10 @@ function plotFunction(traces, bounds, opts) {
         legendItems.forEach(li => {
             ctx.fillStyle = li.color; ctx.fillRect(P.l + 4, ly - 2, 14, 2.5);
             ctx.fillStyle = TH.txt; ctx.font = '9px monospace';
-            ctx.fillText(li.label, P.l + 22, ly);
-            ly += 16;
+            ctx.fillText(li.label, P.l + 22, ly); ly += 16;
         });
     }
 
-    // Function label (first trace)
     if (traces[0] && traces[0].label && legendItems.length <= 1) {
         ctx.fillStyle = TH.txt; ctx.font = '10px monospace';
         ctx.textAlign = 'left'; ctx.textBaseline = 'top';
@@ -254,6 +285,47 @@ function plotFunction(traces, bounds, opts) {
     }
 
     return canvas;
+}
+
+// ─── SWEEP ANIMATION ─────────────────────────────────
+let _sweepSpeed = 0.7;
+
+function setSweepSpeed(v) { _sweepSpeed = Math.max(0.1, Math.min(3, v)); }
+
+function startGraphSweepAnimation(fnText, bounds, opts) {
+    stopGraphSweepAnimation();
+    const container = document.getElementById('desmosContainer');
+    if (!container) return;
+    _sweepAnim = { phase: 0, running: true, raf: null, lastT: null, bounds: { ...bounds }, fnText };
+    const sweepOpts = opts || {};
+    const traces = sweepOpts.traces || [{ fn: fnText, color: '#3b6eff', label: 'y = ' + fnText, riemann: { a: bounds.xMin, b: bounds.xMax } }];
+
+    // Draw first frame synchronously so a canvas exists for initGraphInteraction
+    function renderFrame(phase) {
+        const sweepX = bounds.xMin + phase;
+        const canvas = plotFunction(traces, bounds, { sweepX });
+        container.innerHTML = '';
+        container.appendChild(canvas);
+        if (_graphState) _graphState._canvas = canvas;
+    }
+    renderFrame(0);
+
+    function drawFrame(ts) {
+        if (!_sweepAnim.running) return;
+        if (!_sweepAnim.lastT) _sweepAnim.lastT = ts;
+        const dt = (ts - _sweepAnim.lastT) / 1000;
+        _sweepAnim.lastT = ts;
+        _sweepAnim.phase = (_sweepAnim.phase + dt * _sweepSpeed * 0.5) % (bounds.xMax - bounds.xMin);
+        renderFrame(_sweepAnim.phase);
+        _sweepAnim.raf = requestAnimationFrame(drawFrame);
+    }
+    _sweepAnim.raf = requestAnimationFrame(drawFrame);
+}
+
+function stopGraphSweepAnimation() {
+    if (_sweepAnim.raf) { cancelAnimationFrame(_sweepAnim.raf); _sweepAnim.raf = null; }
+    _sweepAnim.running = false;
+    _sweepAnim.lastT = null;
 }
 
 // ─── 3D SURFACE (Canvas) ──────────────────────────────
@@ -599,16 +671,20 @@ function initGraphInteraction(fnText, bounds) {
     }
 
     if (container.dataset.graphReady) return;
-    const canvas = container.querySelector('canvas');
-    if (!canvas) return;
+    const firstCanvas = container.querySelector('canvas');
+    if (!firstCanvas) return;
     container.dataset.graphReady = '1';
 
+    function getLiveCanvas() { return container.querySelector('canvas') || firstCanvas; }
+
     function screenToMath(cx, cy) {
-        const rect = canvas.getBoundingClientRect();
-        const sx = (cx - rect.left) * (canvas.width / rect.width);
-        const sy = (cy - rect.top) * (canvas.height / rect.height);
+        const cv = getLiveCanvas();
+        if (!cv) return { x: NaN, y: NaN };
+        const rect = cv.getBoundingClientRect();
+        const sx = (cx - rect.left) * (cv.width / rect.width);
+        const sy = (cy - rect.top) * (cv.height / rect.height);
         const P = { t: 32, b: 38, l: 52, r: 24 };
-        const GW = canvas.width - P.l - P.r, GH = canvas.height - P.t - P.b;
+        const GW = cv.width - P.l - P.r, GH = cv.height - P.t - P.b;
         const b = _graphState.bounds;
         const mx = b.xMin + ((sx - P.l) / GW) * (b.xMax - b.xMin);
         const my = b.yMax - ((sy - P.t) / GH) * (b.yMax - b.yMin);
@@ -616,18 +692,20 @@ function initGraphInteraction(fnText, bounds) {
     }
 
     function reRender() {
+        stopGraphSweepAnimation();
         const curFn = _storedArgs ? _storedArgs.fn : _graphState.fn;
         const newCanvas = plotFunction(curFn, _graphState.bounds);
         container.innerHTML = '';
         container.appendChild(newCanvas);
         container.dataset.graphReady = '1';
         if (_storedArgs) _storedArgs.bounds = { ..._graphState.bounds };
-        if (_graphState.tooltip) _graphState.tooltip.style.opacity = '0';
-        _graphState._canvas = newCanvas;
+        if (_graphState && _graphState.tooltip) _graphState.tooltip.style.opacity = '0';
     }
 
-    canvas.addEventListener('mousedown', (e) => {
-        if (e.button !== 0) return;
+    container.addEventListener('mousedown', (e) => {
+        if (!_graphState || e.button !== 0) return;
+        const cv = getLiveCanvas();
+        if (!cv || !cv.contains(e.target)) return;
         _graphState.dragging = true;
         _graphState.wasDragged = false;
         _graphState.dragInfo = { startX: e.clientX, startY: e.clientY, boundsStart: { ..._graphState.bounds } };
@@ -639,9 +717,10 @@ function initGraphInteraction(fnText, bounds) {
         if (!_graphState || !_graphState.dragging || !_graphState.dragInfo) return;
         if (Math.abs(e.clientX - _graphState.dragInfo.startX) > 3 || Math.abs(e.clientY - _graphState.dragInfo.startY) > 3) _graphState.wasDragged = true;
         const b = _graphState.dragInfo.boundsStart;
-        const rect = canvas.getBoundingClientRect();
-        const dx = (e.clientX - _graphState.dragInfo.startX) * (canvas.width / rect.width) / (canvas.width - 80) * (b.xMax - b.xMin);
-        const dy = (_graphState.dragInfo.startY - e.clientY) * (canvas.height / rect.height) / (canvas.height - 80) * (b.yMax - b.yMin);
+        const cv = getLiveCanvas(); if (!cv) return;
+        const rect = cv.getBoundingClientRect();
+        const dx = (e.clientX - _graphState.dragInfo.startX) * (cv.width / rect.width) / (cv.width - 80) * (b.xMax - b.xMin);
+        const dy = (_graphState.dragInfo.startY - e.clientY) * (cv.height / rect.height) / (cv.height - 80) * (b.yMax - b.yMin);
         _graphState.bounds = { xMin: b.xMin - dx, xMax: b.xMax - dx, yMin: b.yMin - dy, yMax: b.yMax - dy };
         reRender();
     });
@@ -651,10 +730,11 @@ function initGraphInteraction(fnText, bounds) {
         if (_graphState.dragging) { _graphState.dragging = false; _graphState.dragInfo = null; container.style.cursor = 'default'; }
     });
 
-    canvas.addEventListener('click', (e) => {
+    container.addEventListener('click', (e) => {
         if (!_graphState) return;
         if (_graphState.wasDragged) { _graphState.wasDragged = false; return; }
         if (_graphState.dragging) return;
+        const cv = getLiveCanvas(); if (!cv || !cv.contains(e.target)) return;
         const c = screenToMath(e.clientX, e.clientY);
         if (!isFinite(c.x) || !isFinite(c.y)) return;
         const tip = _graphState.tooltip;
@@ -665,14 +745,15 @@ function initGraphInteraction(fnText, bounds) {
         tip.style.opacity = '1';
     });
 
-    canvas.addEventListener('wheel', (e) => {
+    container.addEventListener('wheel', (e) => {
         if (!_graphState) return;
         e.preventDefault();
-        const rect = canvas.getBoundingClientRect();
-        const sx = (e.clientX - rect.left) * (canvas.width / rect.width);
-        const sy = (e.clientY - rect.top) * (canvas.height / rect.height);
+        const cv = getLiveCanvas(); if (!cv) return;
+        const rect = cv.getBoundingClientRect();
+        const sx = (e.clientX - rect.left) * (cv.width / rect.width);
+        const sy = (e.clientY - rect.top) * (cv.height / rect.height);
         const P = { t: 32, b: 38, l: 52, r: 24 };
-        const GW = canvas.width - P.l - P.r, GH = canvas.height - P.t - P.b;
+        const GW = cv.width - P.l - P.r, GH = cv.height - P.t - P.b;
         const b = _graphState.bounds;
         const mx = b.xMin + ((sx - P.l) / GW) * (b.xMax - b.xMin);
         const my = b.yMax - ((sy - P.t) / GH) * (b.yMax - b.yMin);
@@ -683,7 +764,7 @@ function initGraphInteraction(fnText, bounds) {
         reRender();
     }, { passive: false });
 
-    _graphState._canvas = canvas;
+    _graphState._canvas = firstCanvas;
 }
 
 // ─── PARAMETER SLIDERS ────────────────────────────────
@@ -775,8 +856,20 @@ function renderGraphOnce(qt, raw) {
         canvas = renderTaylorSeries(fnText, bounds, 5);
     } else {
         const traces = [{ fn: fnText, color: '#3b6eff', label: 'y = ' + fnText, width: 3 }];
-        if (/integrate|∫/.test(lower)) { traces[0].integral = [0, 3]; traces[0].riemann = { n: 60, a: 0.5, b: 2.5 }; }
+        if (/integrate|∫/.test(lower)) { traces[0].integral = [0, 3]; traces[0].riemann = { a: bounds.xMin, b: bounds.xMax }; }
         if (/differentiate|derivative/.test(lower)) traces[0].derivative = true;
+
+        // Start sweep animation for integral problems
+        if (/integrate|∫/.test(lower)) {
+            container.innerHTML = '';
+            graphRendered = true;
+            storeGraphArgs(qt, raw, fnText, bounds);
+            startGraphSweepAnimation(fnText, bounds, { traces });
+            initGraphInteraction(fnText, bounds);
+            if (panel) panel.classList.add('visible');
+            return;
+        }
+
         canvas = plotFunction(traces, bounds, {});
     }
 
@@ -835,8 +928,15 @@ function reShowGraph() {
         canvas = renderTaylorSeries(args.fn, args.bounds, 5);
     } else {
         const traces = [{ fn: args.fn, color: '#3b6eff', label: 'y = ' + args.fn, width: 3 }];
-        if (/integrate|∫/.test(lower)) { traces[0].integral = [0, 3]; traces[0].riemann = { n: 60, a: 0.5, b: 2.5 }; }
+        if (/integrate|∫/.test(lower)) { traces[0].integral = [0, 3]; traces[0].riemann = { a: args.bounds.xMin, b: args.bounds.xMax }; }
         if (/differentiate|derivative/.test(lower)) traces[0].derivative = true;
+
+        if (/integrate|∫/.test(lower)) {
+            startGraphSweepAnimation(args.fn, args.bounds, { traces });
+            if (panel) panel.classList.add('visible');
+            return;
+        }
+
         canvas = plotFunction(traces, args.bounds, {});
     }
 
@@ -847,6 +947,7 @@ function reShowGraph() {
 }
 
 function destroyGraph() {
+    stopGraphSweepAnimation();
     stopCurveTrace();
     removeParamSliders();
     _graphState = null;
